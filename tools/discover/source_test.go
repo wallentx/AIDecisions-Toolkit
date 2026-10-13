@@ -140,15 +140,35 @@ func TestSourceNoCacheAndMalformedInput(t *testing.T) {
 		t.Fatal("size limit ignored")
 	}
 }
-func fakeReflect(t *testing.T, body string) string {
+func fakeReflect(t *testing.T, fail bool) string {
 	t.Helper()
-	shell, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skip("shell unavailable for synthetic helper")
+	dir := t.TempDir()
+	name := "fake-reflect"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
 	}
-	path := filepath.Join(t.TempDir(), "fake-reflect")
-	if err = os.WriteFile(path, []byte("#!"+shell+"\n"+body+"\n"), 0700); err != nil {
+	path := filepath.Join(dir, name)
+	body := `package main
+import ("fmt"; "os"; "strings")
+func main() {
+ if file := os.Getenv("DISCOVER_FAKE_ARGV"); file != "" {
+  if err := os.WriteFile(file, []byte(strings.Join(os.Args[1:], "\n")+"\n"), 0600); err != nil { panic(err) }
+ }
+ fmt.Print("[]")
+}
+`
+	if fail {
+		body = `package main
+import ("fmt"; "os")
+func main() { fmt.Fprint(os.Stderr, "secret=never-disclose"); fmt.Print("secret=never-disclose"); os.Exit(3) }
+`
+	}
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte(body), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if output, err := exec.Command("go", "build", "-o", path, source).CombinedOutput(); err != nil {
+		t.Fatalf("build synthetic Reflect helper: %v\n%s", err, output)
 	}
 	return path
 }
@@ -156,11 +176,14 @@ func TestReflectFixedArgvCacheTTLRefreshAndFailures(t *testing.T) {
 	options := syntheticOptions(t)
 	options.Input = ""
 	options.AllProjects = true
-	options.Project = "/synthetic/project;touch SHOULD_NOT_EXIST"
+	project, err := filepath.Abs("/synthetic/project;touch SHOULD_NOT_EXIST")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Project = project
 	argvFile := filepath.Join(t.TempDir(), "argv")
 	t.Setenv("DISCOVER_FAKE_ARGV", argvFile)
-	options.Reflect = fakeReflect(t, `printf '%s\n' "$@" > "$DISCOVER_FAKE_ARGV"
-printf '[]'`)
+	options.Reflect = fakeReflect(t, false)
 	_, first, err := Load(context.Background(), options, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -192,9 +215,7 @@ printf '[]'`)
 	if _, info, err := Load(context.Background(), options, nil); err != nil || info.Hit {
 		t.Fatalf("expired TTL: %+v %v", info, err)
 	}
-	options.Reflect = fakeReflect(t, `printf 'secret=never-disclose' >&2
-printf 'secret=never-disclose'
-exit 3`)
+	options.Reflect = fakeReflect(t, true)
 	if _, _, err = Load(context.Background(), options, nil); err == nil || strings.Contains(err.Error(), "never-disclose") {
 		t.Fatalf("unsafe helper failure: %v", err)
 	}
