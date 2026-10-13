@@ -1,0 +1,7 @@
+{
+  "id": "diff",
+  "command": "AID.diff",
+  "version": "0.2.0",
+  "description": "Assess code changes with configurable probability checks.",
+  "package": "./cmd/AID.diff"
+}

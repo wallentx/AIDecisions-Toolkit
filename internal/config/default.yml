@@ -1,0 +1,39 @@
+version: 1
+
+global:
+  # OPENAI_API_KEY takes precedence. Store a path here, never a key.
+  api_key_file: ""
+  model: gpt-6-luna
+  timeout_seconds: 30
+  output: auto  # JSON for agents/pipes, readable text in a terminal
+
+updates:
+  repository: ""  # GitHub owner/repo; set this before AID --update
+  install_dir: ""  # Empty means the directory containing AID
+
+tools:
+  diff:
+    checks_file: ""  # Optional JSON mapping check names to questions
+    context: ""
+  discover:
+    provider: codex
+    timeout_seconds: 120
+    cache_ttl_seconds: 600
+    max_output_bytes: 32768
+    page_size: 12
+    min_sessions: 2
+  pr:
+    gh: gh
+    hostname: github.com
+    timeout_seconds: 120
+    max_output_bytes: 131072
+    text_limit: 4000
+  ci:
+    gh: gh
+    hostname: github.com
+    timeout_seconds: 120
+    max_output_bytes: 131072
+    max_log_bytes: 2097152
+  runtime:
+    timeout_seconds: 120
+    max_file_bytes: 536870912

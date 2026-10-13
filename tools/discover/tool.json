@@ -1,0 +1,7 @@
+{
+  "id": "discover",
+  "command": "AID.discover",
+  "version": "0.1.0",
+  "description": "Prepare compact, redacted history evidence for agent-led tool discovery.",
+  "package": "./cmd/AID.discover"
+}

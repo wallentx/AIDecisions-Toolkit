@@ -1,0 +1,7 @@
+diff --git a/api.py b/api.py
+--- a/api.py
++++ b/api.py
+@@ -1,2 +1,2 @@
+ def get_user(user):
+-    return {"id": user.id}
++    return {"user_id": user.id}

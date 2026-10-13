@@ -1,0 +1,5 @@
+{
+  "changes_behavior": "Does this diff change observable runtime behavior?",
+  "breaks_compatibility": "Does this diff remove or incompatibly change an existing public API, configuration option, or stored data format?",
+  "security_sensitive": "Does this diff change authentication, authorization, secret handling, command execution, or processing of untrusted input?"
+}

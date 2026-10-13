@@ -1,0 +1,4 @@
+{
+  "needs_docs": "Does this diff change behavior that users need to know about in documentation?",
+  "needs_regression_test": "Does this diff change executable behavior that should be covered by a regression test?"
+}
