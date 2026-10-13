@@ -72,9 +72,37 @@ the automated test suite. Test behavior and failure boundaries, not wording.
 A release must contain this source layout and a `VERSION` matching its stable
 GitHub tag (`vMAJOR.MINOR.PATCH`). Run the native builder before publishing;
 it discovers tools, builds each executable plus AID, and verifies their version
-contracts. Users build the release locally; cross-platform binary assets are
-not required. Publishing requires a selected repository and a separate release
-action; implementing a tool does not publish it.
+contracts. CI also packages native builds for Linux, macOS, and Windows.
+Termux users build locally with Android's native toolchain.
+
+The first published release resets the suite and all tools to `0.1.0`. Earlier
+local snapshot versions are development history. Future suite and tool versions
+remain independent under the version contract above.
+
+CI runs on pushes to `main` and pull requests: formatting, version contracts,
+Go tests/vet, Python tests, native builds, and archive packaging. It also tests
+the minimum Go version. CI uses Go 1.27.2 (minimum lane: 1.26.9) and Python
+3.14.8, verified supported on 2026-10-13. Go supports its two newest major
+releases; Python 3.14 receives security support through October 2030. See
+[Go's support policy](https://go.dev/doc/devel/release) and
+[Python lifecycle data](https://endoflife.date/python).
+
+To publish a release, update `VERSION` and the default in
+`internal/buildinfo/version.go`, bump affected tool manifests, and write
+`docs/releases/vMAJOR.MINOR.PATCH.md`. Commit and push that source before tagging:
+
+```sh
+python .github/scripts/verify-version.py --tag vMAJOR.MINOR.PATCH
+git tag -a vMAJOR.MINOR.PATCH -m 'AIDecisions-Toolkit vMAJOR.MINOR.PATCH'
+git push origin vMAJOR.MINOR.PATCH
+```
+
+The tag workflow requires a matching stable version, reruns the complete CI
+workflow, and publishes only after every job passes. Release assets contain
+native ZIPs, a source archive, and `SHA256SUMS`. Native ZIPs contain binary
+checksums and `build-info.json` recording the source commit, tool versions,
+Go version, platform, and workflow URL. Hosted Linux builds disable CGO;
+Termux's local build keeps its native default.
 
 The installer is a fresh Go implementation of the interaction pattern inspected
 in `wallentx/codex-reflect` (`reflect init`). Current integrations use provider

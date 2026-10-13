@@ -1,5 +1,8 @@
 # AIDecisions-Toolkit candidate shortlist
 
+The first published release resets all versions to `0.1.0`. Suite versions
+below describe earlier local development snapshots, not published releases.
+
 Updated 2026-10-13. This combines the earlier discovery and the recent three-day
 scan. The earlier scan requested 365 days and observed July 10 through October
 13: 2,541 records, 128 sessions, and 53 project directories. The recent scan

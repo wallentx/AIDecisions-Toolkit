@@ -12,7 +12,7 @@ global:
   timeout_seconds: 30
   output: auto
 updates:
-  repository: "" # Set GitHub owner/repo before checking for releases
+  repository: "wallentx/AIDecisions-Toolkit"
   install_dir: "" # Empty means the current AID executable directory
 tools:
   diff:
@@ -96,7 +96,8 @@ before installing skills. After moving it, rerun initialization.
 
 ## Update on the current device
 
-Choose `updates.repository` before using the updater:
+The default release repository is `wallentx/AIDecisions-Toolkit`. Existing
+configuration files are preserved; set `updates.repository` if yours is empty:
 
 ```sh
 AID --update --check
@@ -117,5 +118,5 @@ it reports the result-log path rather than claiming immediate completion.
 After updating, rerun `AID --init` to refresh installed skills.
 
 The updater has mock-server/build/replacement tests. No live GitHub release
-update has been performed for this new, unpublished suite. Windows compilation
-is checked; Windows runtime behavior is not validated on this device.
+update has been performed. Native Windows builds and automated tests run in CI;
+interactive Windows installation remains outside this device's validation.

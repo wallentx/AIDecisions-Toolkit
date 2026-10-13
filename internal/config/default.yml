@@ -8,7 +8,7 @@ global:
   output: auto  # JSON for agents/pipes, readable text in a terminal
 
 updates:
-  repository: ""  # GitHub owner/repo; set this before AID --update
+  repository: "wallentx/AIDecisions-Toolkit"  # GitHub release source
   install_dir: ""  # Empty means the directory containing AID
 
 tools:

@@ -12,6 +12,17 @@ bounded log excerpts and explicit source provenance.
 **AID.runtime** inspects AArch64 ELF files as data and returns bounded static
 facts, provenance, and explicitly requested host/path observations.
 
+## Install a release
+
+Download the native ZIP matching your OS and architecture from
+[GitHub Releases](https://github.com/wallentx/AIDecisions-Toolkit/releases).
+Extract it, keep all six executables together, and run `AID --init` to install
+agent skills. Archives include checksums and build provenance.
+
+Termux users build from source using the commands below. `AID.runtime` inspects
+files only on Linux and Android hosts; its other platform builds return an
+explicit unavailable result.
+
 ## Build on this device
 
 Run these commands from the `AIDecisions-Toolkit` directory:
@@ -116,6 +127,7 @@ observations, and unknowns in a packet capped at 4 KiB. See
 
 [Configuration and usage](docs/usage.md) |
 [Adding tools and releases](docs/development.md) |
+[Release notes](docs/releases/v0.1.0.md) |
 [Pull-request evidence](docs/pr.md) |
 [CI evidence](docs/ci.md) |
 [Static runtime facts](docs/runtime.md) |

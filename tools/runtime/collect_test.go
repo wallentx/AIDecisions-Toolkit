@@ -1,3 +1,5 @@
+//go:build linux || android
+
 package runtime
 
 import (
@@ -79,6 +81,9 @@ func TestCollectSyntheticGlibcAbsentAndUnchecked(t *testing.T) {
 }
 
 func TestCollectNativeBionicArtifact(t *testing.T) {
+	if goruntime.GOARCH != "arm64" {
+		t.Skip("native fixture requires an AArch64 host; synthetic ELF cases cover other architectures")
+	}
 	target, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
