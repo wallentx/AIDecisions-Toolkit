@@ -16,9 +16,18 @@ import (
 	"aid/internal/buildinfo"
 )
 
+func syntheticProject(t *testing.T) string {
+	t.Helper()
+	project, err := filepath.Abs("/synthetic/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
 func syntheticSource(t *testing.T, message string) string {
 	t.Helper()
-	rows := []map[string]any{{"kind": "user", "message": message, "project": "/synthetic/repo", "session_id": "synthetic-session", "timestamp": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano), "record": 1, "provider": "codex"}}
+	rows := []map[string]any{{"kind": "user", "message": message, "project": syntheticProject(t), "session_id": "synthetic-session", "timestamp": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano), "record": 1, "provider": "codex"}}
 	data, err := json.Marshal(rows)
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +36,7 @@ func syntheticSource(t *testing.T, message string) string {
 }
 func syntheticOptions(t *testing.T) SourceOptions {
 	t.Helper()
-	return SourceOptions{Input: "-", CacheDir: filepath.Join(canonicalTemp(t), "cache"), Project: "/synthetic/repo", Provider: "codex", Days: 30, CacheTTL: 10 * time.Minute}
+	return SourceOptions{Input: "-", CacheDir: filepath.Join(canonicalTemp(t), "cache"), Project: syntheticProject(t), Provider: "codex", Days: 30, CacheTTL: 10 * time.Minute}
 }
 func TestSourceCacheContainsOnlyPreparedEvidence(t *testing.T) {
 	options := syntheticOptions(t)

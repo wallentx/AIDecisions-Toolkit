@@ -124,6 +124,9 @@ func TestSnapshotRejectsTamperedBundle(t *testing.T) {
 	if err = json.Unmarshal(data, &entry); err != nil {
 		t.Fatal(err)
 	}
+	if len(entry.Bundle.Records) != 1 {
+		t.Fatalf("expected one prepared record, got %d", len(entry.Bundle.Records))
+	}
 	entry.Bundle.Records[0].Text = "Tampered evidence never emitted by preparation"
 	data, err = json.Marshal(entry)
 	if err != nil {
