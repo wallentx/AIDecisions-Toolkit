@@ -2,6 +2,7 @@ package discover
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -179,7 +180,7 @@ func TestInventoryEntryLimit(t *testing.T) {
 	home := inventoryTestHome(t)
 	root := filepath.Join(home, "selected-codex", "skills")
 	for i := 0; i < inventoryEntryLimit+1; i++ {
-		inventoryFixture(t, filepath.Join(root, string(rune(0x1000+i))), "ignored")
+		inventoryFixture(t, filepath.Join(root, fmt.Sprintf("entry-%05d", i)), "ignored")
 	}
 	inv, err := loadInventoryAtHome("codex", "", "", home)
 	if err != nil || inv.Complete {

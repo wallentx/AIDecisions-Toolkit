@@ -45,7 +45,10 @@ func TestMachineReadableCatalog(t *testing.T) {
 }
 
 func TestInitDryRunDoesNotCreateConfig(t *testing.T) {
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", base)
 	t.Setenv("USERPROFILE", base)
 	t.Setenv("CODEX_HOME", filepath.Join(base, "codex"))

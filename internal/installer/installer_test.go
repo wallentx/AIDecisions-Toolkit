@@ -23,7 +23,10 @@ type fixture struct {
 
 func setup(t *testing.T) fixture {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	return fixture{
 		root: root, state: filepath.Join(root, "state", "installer.json"), bin: filepath.Join(root, "bin"),
 		providers: []provider{
@@ -266,7 +269,10 @@ func quoteJSON(s string) string {
 
 func isolateHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"HOME", "USERPROFILE"} {
 		t.Setenv(name, home)
 	}
