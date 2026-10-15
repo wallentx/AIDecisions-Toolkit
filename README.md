@@ -25,6 +25,10 @@ explicit unavailable result.
 
 ## Build on this device
 
+Run `./install.sh` to build and install the complete suite to `~/.local/bin`.
+The script requires Go and prints a PATH setup command if needed. To choose
+another directory, run `INSTALL_DIR=/absolute/path/to/bin ./install.sh`.
+
 Run these commands from the `AIDecisions-Toolkit` directory:
 
 ```sh
