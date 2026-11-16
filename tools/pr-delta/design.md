@@ -87,12 +87,31 @@ Only read-only `gh api` calls with fixed arguments are made, through
    file that entered or left the diff. A pure rename (no patch, no changes) is
    an empty patch. A compare returning 300 files may be truncated and gives
    `unknown`.
+
+   Compare file objects carry no mode, so a follow-up that only
+   flips a file's executable bit leaves its patch, status, and blob unchanged.
+   For each file that would be `unchanged` or `moved_only`, one GraphQL query
+   reads `Commit.file(path:) { mode }` at each side's merge base (the previous
+   path for a rename) and at each side's commit, with commits and paths as
+   variables and at most 200 lookups per request. A side's mode change is the
+   pair (merge-base mode, side mode), or none when they are equal. The tool
+   compares the two sides' changes because the question is whether the PR's
+   change to the file differs. A direct comparison of baseline and head modes
+   would also report a mode change that arrived through the base after a
+   rebase, which is part of neither PR diff. A
+   differing change makes the file `changed` with `mode_changed: true` and a
+   reason naming both changes. A failed lookup, including one refused by the
+   request budget, makes those files `unknown`, so the verdict is `unknown`
+   and `complete` is false. When baseline and head are the same commit with
+   the same merge base, no lookup is made. The query costs one request for up
+   to 200 lookups.
 8. Rebased commits: the current PR commits whose patch identity has no
    equivalent among baseline-side commits. Identical SHAs match without a
    request. Other commits need `commits/{sha}` patches, capped by
-   `--max-commit-patches`. A file with an empty patch, such as a pure rename,
-   adds its status, previous filename, and blob SHA to the identity, so renames
-   from different sources do not match. Merge commits, missing patches, or the cap give
+   `--max-commit-patches`. Every file adds its path, status, and previous
+   filename to the identity, so renames from different sources with identical
+   edits do not match. A file with an empty patch, such as a pure rename, also
+   adds its blob SHA. Merge commits, missing patches, or the cap give
    `new_commits: null` plus `new_commits_note`.
 9. Threads: GraphQL `reviewThreads` (all pages, nested comment pages for
    matching threads) whose first comment author is the reviewer.
@@ -118,7 +137,7 @@ baseline{source,review_id,review_state,commit,submitted_at} | null,
 head_relation, new_commits[{sha,message_first_line}] | null, new_commits_note,
 pr_diff{verdict,reason,base{ref,sha,source},baseline_side,head_side,counts,
         files[{path,status,changed_hunks[{old_header,new_header}],
-               changed_hunks_omitted,reason}]} | null,
+               changed_hunks_omitted,mode_changed,reason}]} | null,
 threads{total,unresolved,unresolved_with_author_reply,
         items[{thread_id,first_comment_id,path,line,is_resolved,is_outdated,
                author_replied_after,last_reply_by,last_reply_excerpt,
@@ -132,7 +151,10 @@ warnings[], output{max_bytes,truncated,omitted_items,retry_hint}
 
 `changed_hunks` removes hunks whose bodies appear on both sides, then pairs
 the remaining baseline-side (`old_header`) and head-side (`new_header`) hunks
-in order. Either header may be empty. Files are ordered changed, added,
+in order. Each baseline hunk matches at most one head hunk: an exact header
+and body match first, then the same body with the nearest old start line. When
+a body repeats and the head keeps only one instance, the dropped instance is
+the one reported. Either header may be empty. Files are ordered changed, added,
 removed, unknown, moved_only, unchanged, so output trimming drops unchanged
 files first.
 

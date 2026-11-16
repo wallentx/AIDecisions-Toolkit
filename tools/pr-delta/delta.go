@@ -3,6 +3,7 @@ package prdelta
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -313,13 +314,15 @@ func (c *collector) collectPRDiff(pull restPull, baseline, head string) (compare
 		}
 	}
 	diff.Files = compareFiles(baselineSide.response.Files, headSide.response.Files, c.opts.MaxHunksPerFile)
+	c.checkModes(diff.Files, baselineSide, headSide)
+	sortFiles(diff.Files)
 	diff.Verdict = verdict(diff.Files)
 	for _, file := range diff.Files {
 		diff.Counts[file.Status]++
 	}
 	c.addItems(key, len(diff.Files))
 	if diff.Verdict == VerdictUnknown {
-		diff.Reason = "at least one file patch was omitted by GitHub (binary or too large) or could not be parsed"
+		diff.Reason = "at least one file patch was omitted by GitHub (binary or too large) or could not be parsed, or a file mode could not be read"
 		c.fail(key, "patch_unavailable", diff.Reason)
 	}
 	c.complete(key)
@@ -505,11 +508,13 @@ func (c *collector) patchIdentity(sha string) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		hash.Write([]byte(file.Filename + "\x00"))
+		// Status and source path are part of every file's identity, so a
+		// rename from a different source with identical edits does not match.
+		hash.Write([]byte(file.Filename + "\x00" + file.Status + "\x00" + file.PreviousFilename + "\x00"))
 		if len(hunks) == 0 {
 			// An empty patch (for example a pure rename) carries no content,
-			// so its status, source path, and blob identify the change.
-			hash.Write([]byte(file.Status + "\x00" + file.PreviousFilename + "\x00" + file.SHA + "\x00"))
+			// so its blob identifies the change.
+			hash.Write([]byte(file.SHA + "\x00"))
 		}
 		for _, hunk := range hunks {
 			hash.Write([]byte(hunk.body + "\x01"))
@@ -591,13 +596,17 @@ func compareFiles(baselineFiles, headFiles []restFile, maxHunks int) []FileDelta
 		}
 		files = append(files, sideOnlyFile(file, FileRemoved, maxHunks))
 	}
+	sortFiles(files)
+	return files
+}
+
+func sortFiles(files []FileDelta) {
 	sort.SliceStable(files, func(i, j int) bool {
 		if statusOrder[files[i].Status] != statusOrder[files[j].Status] {
 			return statusOrder[files[i].Status] < statusOrder[files[j].Status]
 		}
 		return files[i].Path < files[j].Path
 	})
-	return files
 }
 
 // sideOnlyFile describes a file that entered (added) or left (removed) the PR
@@ -660,26 +669,49 @@ func compareFile(old, current restFile, maxHunks int) FileDelta {
 	return delta
 }
 
-// pairHunks removes hunks whose bodies appear on both sides (as a multiset),
-// then pairs the remaining baseline and head hunks in order.
+// pairHunks removes hunks whose bodies appear on both sides, then pairs the
+// remaining baseline and head hunks in order. Each baseline hunk matches at
+// most one head hunk. A head hunk first matches a baseline hunk with the same
+// header and body; otherwise it matches the same-body baseline hunk whose old
+// start line is nearest, so the unmatched instance of a repeated body is the
+// one that was actually dropped.
 func pairHunks(oldHunks, newHunks []hunk, maxHunks int) ([]HunkChange, int) {
-	remaining := map[string]int{}
-	for _, item := range oldHunks {
-		remaining[item.body]++
+	matchedOld := make([]bool, len(oldHunks))
+	matchedNew := make([]bool, len(newHunks))
+	for j, item := range newHunks {
+		for i, old := range oldHunks {
+			if !matchedOld[i] && old.header == item.header && old.body == item.body {
+				matchedOld[i], matchedNew[j] = true, true
+				break
+			}
+		}
 	}
-	var unmatchedNew []hunk
-	for _, item := range newHunks {
-		if remaining[item.body] > 0 {
-			remaining[item.body]--
+	for j, item := range newHunks {
+		if matchedNew[j] {
 			continue
 		}
-		unmatchedNew = append(unmatchedNew, item)
+		best := -1
+		for i, old := range oldHunks {
+			if matchedOld[i] || old.body != item.body {
+				continue
+			}
+			if best < 0 || lineDistance(old, item) < lineDistance(oldHunks[best], item) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			matchedOld[best], matchedNew[j] = true, true
+		}
 	}
-	var unmatchedOld []hunk
-	for _, item := range oldHunks {
-		if remaining[item.body] > 0 {
-			remaining[item.body]--
+	var unmatchedOld, unmatchedNew []hunk
+	for i, item := range oldHunks {
+		if !matchedOld[i] {
 			unmatchedOld = append(unmatchedOld, item)
+		}
+	}
+	for j, item := range newHunks {
+		if !matchedNew[j] {
+			unmatchedNew = append(unmatchedNew, item)
 		}
 	}
 	count := max(len(unmatchedOld), len(unmatchedNew))
@@ -697,6 +729,33 @@ func pairHunks(oldHunks, newHunks []hunk, maxHunks int) ([]HunkChange, int) {
 	return changes, count - len(changes)
 }
 
+// lineDistance is the distance between two hunks' old-file start lines.
+func lineDistance(left, right hunk) int {
+	distance := oldStart(left.header) - oldStart(right.header)
+	if distance < 0 {
+		return -distance
+	}
+	return distance
+}
+
+// oldStart reads the old-file start line from an "@@ -a,b +c,d @@" header,
+// or 0 when the header has no parsable range.
+func oldStart(header string) int {
+	rest, ok := strings.CutPrefix(header, "@@ -")
+	if !ok {
+		return 0
+	}
+	end := strings.IndexAny(rest, ", ")
+	if end < 0 {
+		return 0
+	}
+	start, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return 0
+	}
+	return start
+}
+
 func verdict(files []FileDelta) string {
 	result := VerdictUnchanged
 	for _, file := range files {
@@ -712,4 +771,181 @@ func verdict(files []FileDelta) string {
 		}
 	}
 	return result
+}
+
+// ---- file modes ----
+
+// modeLookupBatch bounds the file(path:) lookups sent in one GraphQL request.
+const modeLookupBatch = 200
+
+type modeKey struct{ commit, path string }
+
+// modeChange is the mode change a side's PR diff makes to a file, as the mode
+// at the merge base and at the side's commit. Both are zero when the PR leaves
+// the mode alone, and a zero mode means the file is absent.
+type modeChange struct{ from, to int }
+
+// checkModes compares the file mode change of each unchanged or moved_only
+// file. Compare file objects carry no mode, so the modes come from GraphQL
+// Commit.file at each side's merge base and commit. Comparing the change, and
+// not the head and baseline modes directly, keeps a mode change that arrived
+// through the base out of the PR delta. A file whose mode change differs
+// becomes changed with mode_changed. When a lookup fails or exceeds the
+// request budget, the affected files become unknown.
+func (c *collector) checkModes(files []FileDelta, baselineSide, headSide compareSide) {
+	if baselineSide.head == headSide.head && baselineSide.mergeBase() == headSide.mergeBase() {
+		return
+	}
+	sides := []map[string]restFile{indexFiles(baselineSide.response.Files), indexFiles(headSide.response.Files)}
+	commits := []compareSide{baselineSide, headSide}
+	var candidates []int
+	var keys []modeKey
+	seen := map[modeKey]bool{}
+	for index, file := range files {
+		if file.Status != VerdictUnchanged && file.Status != VerdictMovedOnly {
+			continue
+		}
+		candidates = append(candidates, index)
+		for n, side := range commits {
+			from, to := modeKeys(sides[n][file.Path], side)
+			for _, key := range []*modeKey{from, to} {
+				if key != nil && !seen[*key] {
+					seen[*key] = true
+					keys = append(keys, *key)
+				}
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	modes, ok := c.fileModes(keys)
+	for _, index := range candidates {
+		file := &files[index]
+		if !ok {
+			file.Status = VerdictUnknown
+			file.Reason = "file mode could not be read"
+			continue
+		}
+		var changes [2]modeChange
+		for n, side := range commits {
+			from, to := modeKeys(sides[n][file.Path], side)
+			changes[n] = modeChange{modeAt(modes, from), modeAt(modes, to)}
+			if changes[n].from == changes[n].to {
+				changes[n] = modeChange{}
+			}
+		}
+		if changes[0] != changes[1] {
+			file.Status = VerdictChanged
+			file.ModeChanged = true
+			file.Reason = "file mode change differs: baseline side " + changes[0].String() + ", head side " + changes[1].String()
+		}
+	}
+}
+
+func indexFiles(files []restFile) map[string]restFile {
+	index := make(map[string]restFile, len(files))
+	for _, file := range files {
+		index[file.Filename] = file
+	}
+	return index
+}
+
+// modeKeys returns the lookups for a file's mode at the side's merge base
+// (its previous path for a rename or copy) and at the side's commit. A file
+// that the diff adds has no merge-base lookup, and a removed file has no
+// commit lookup, so every lookup names a path that exists.
+func modeKeys(file restFile, side compareSide) (from, to *modeKey) {
+	if file.Status != "added" {
+		path := file.Filename
+		if file.PreviousFilename != "" {
+			path = file.PreviousFilename
+		}
+		from = &modeKey{side.mergeBase(), path}
+	}
+	if file.Status != "removed" {
+		to = &modeKey{side.head, file.Filename}
+	}
+	return from, to
+}
+
+func modeAt(modes map[modeKey]int, key *modeKey) int {
+	if key == nil {
+		return 0
+	}
+	return modes[*key]
+}
+
+func (change modeChange) String() string {
+	if change == (modeChange{}) {
+		return "no mode change"
+	}
+	return octalMode(change.from) + " -> " + octalMode(change.to)
+}
+
+func octalMode(mode int) string {
+	if mode == 0 {
+		return "absent"
+	}
+	return strconv.FormatInt(int64(mode), 8)
+}
+
+// fileModes reads each key's mode in batches of modeLookupBatch lookups per
+// GraphQL request. Paths and commits travel as variables.
+func (c *collector) fileModes(keys []modeKey) (map[modeKey]int, bool) {
+	modes := map[modeKey]int{}
+	for start := 0; start < len(keys); start += modeLookupBatch {
+		batch := keys[start:min(start+modeLookupBatch, len(keys))]
+		query, variables, aliases := modeQuery(c.ref.Owner, c.ref.Name, batch)
+		var data struct {
+			Repository map[string]map[string]*struct {
+				Mode *int `json:"mode"`
+			} `json:"repository"`
+		}
+		if !c.graphQL(SourcePRDiff, query, variables, &data, false) {
+			return nil, false
+		}
+		for index, key := range batch {
+			entry := data.Repository[aliases[index][0]][aliases[index][1]]
+			if entry == nil || entry.Mode == nil || *entry.Mode == 0 {
+				c.fail(SourcePRDiff, "invalid_response", "file mode lookup omitted a file")
+				return nil, false
+			}
+			modes[key] = *entry.Mode
+		}
+	}
+	return modes, true
+}
+
+// modeQuery builds one query with a Commit alias per commit and a file alias
+// per lookup. aliases[i] names the commit and file aliases of keys[i].
+func modeQuery(owner, name string, keys []modeKey) (string, map[string]any, [][2]string) {
+	variables := map[string]any{"owner": owner, "name": name}
+	declarations := []string{"$owner: String!", "$name: String!"}
+	commitAlias := map[string]string{}
+	var commitOrder []string
+	fields := map[string][]string{}
+	aliases := make([][2]string, len(keys))
+	for index, key := range keys {
+		alias, ok := commitAlias[key.commit]
+		if !ok {
+			alias = "c" + strconv.Itoa(len(commitOrder))
+			commitAlias[key.commit] = alias
+			commitOrder = append(commitOrder, key.commit)
+			variables[alias] = key.commit
+			declarations = append(declarations, "$"+alias+": GitObjectID!")
+		}
+		file, path := "f"+strconv.Itoa(index), "p"+strconv.Itoa(index)
+		variables[path] = key.path
+		declarations = append(declarations, "$"+path+": String!")
+		fields[alias] = append(fields[alias], file+": file(path: $"+path+") { mode }")
+		aliases[index] = [2]string{alias, file}
+	}
+	var body strings.Builder
+	for _, commit := range commitOrder {
+		alias := commitAlias[commit]
+		fmt.Fprintf(&body, "    %s: object(oid: $%s) { ... on Commit { %s } }\n", alias, alias, strings.Join(fields[alias], " "))
+	}
+	query := "query(" + strings.Join(declarations, ", ") + ") {\n  repository(owner: $owner, name: $name) {\n" + body.String() + "  }\n}"
+	return query, variables, aliases
 }

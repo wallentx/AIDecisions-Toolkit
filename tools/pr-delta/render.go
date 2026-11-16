@@ -169,7 +169,11 @@ func writeText(w io.Writer, result Result) error {
 				fmt.Fprintln(&b, "  ... more files in --json")
 				break
 			}
-			fmt.Fprintf(&b, "  %-10s %s (%d hunks)\n", file.Status, file.Path, len(file.ChangedHunks)+file.HunksOmitted)
+			mode := ""
+			if file.ModeChanged {
+				mode = ", mode changed"
+			}
+			fmt.Fprintf(&b, "  %-10s %s (%d hunks%s)\n", file.Status, file.Path, len(file.ChangedHunks)+file.HunksOmitted, mode)
 			shown++
 		}
 	}

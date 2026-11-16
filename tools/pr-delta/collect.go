@@ -507,7 +507,8 @@ func (c *collector) collectThreads(reviewer string) {
 
 func (c *collector) threadComments(id string, cursor *string) ([]*gqlComment, bool) {
 	var comments []*gqlComment
-	for page := 1; cursor != nil; page++ {
+	// collectThreads already read the first comment page, so counting starts at 2.
+	for page := 2; cursor != nil; page++ {
 		if page > c.opts.MaxPages {
 			c.fail(SourceThreads, "page_limit", "review thread comment page limit reached")
 			return nil, false
