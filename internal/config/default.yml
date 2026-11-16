@@ -28,6 +28,12 @@ tools:
     timeout_seconds: 120
     max_output_bytes: 131072
     text_limit: 4000
+  pr-delta:
+    gh: gh
+    hostname: github.com
+    timeout_seconds: 120
+    max_output_bytes: 131072
+    text_limit: 280
   ci:
     gh: gh
     hostname: github.com

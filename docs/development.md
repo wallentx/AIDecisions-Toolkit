@@ -16,6 +16,7 @@ AIDecisions-Toolkit/
 |   |-- AID.diff/main.go
 |   |-- AID.discover/main.go
 |   |-- AID.pr/main.go
+|   |-- AID.pr-delta/main.go
 |   |-- AID.runtime/main.go
 |   `-- aid-build/main.go
 |-- tools/diff/
@@ -47,10 +48,10 @@ transport and infrastructure live under `internal/`. The launcher automatically
 embeds `tools/*/tool.json` and `tools/*/SKILL.md`; no manual tool registry edit is
 needed. A new manifest's package must be `./cmd/AID.<id>`.
 
-`AID.pr` and `AID.ci` share GitHub reference validation, fixed-argument `gh`
-transport, source status, and bounded I/O. CI log reads add an in-memory raw GET
-operation without changing PR JSON request behavior. Attempt selection and log
-processing remain CI-specific; neither tool imports the other.
+`AID.pr`, `AID.pr-delta`, and `AID.ci` share GitHub reference validation,
+fixed-argument `gh` transport, source status, and bounded I/O. CI log reads add
+an in-memory raw GET operation without changing PR JSON request behavior.
+Attempt selection and log processing remain CI-specific; no tool imports another.
 
 `tool.json` is the source of truth for each tool's version. Root `VERSION`
 identifies the whole tested release. Changing shared code bumps the versions
