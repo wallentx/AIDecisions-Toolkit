@@ -362,7 +362,7 @@ func itemDelta(ctx context.Context, api API, host, reviewer string, item Item) *
 	}
 	result := prdelta.Collect(ctx, api, ref, prdelta.Options{Reviewer: reviewer})
 	delta := &Delta{HeadRelation: result.HeadRelation, Verdict: prdelta.VerdictUnknown, Complete: result.Complete,
-		ThreadsUnresolved: result.Threads.Unresolved, ThreadsUnresolvedWithReply: result.Threads.UnresolvedWithReply,
+		ThreadsUnresolved: result.Threads.Unresolved, ThreadsUnresolvedWithReply: result.Threads.UnresolvedWithAuthorReply,
 		CI:       DeltaCI{Success: result.CI.Counts.Success, Failure: result.CI.Counts.Failure, Pending: result.CI.Counts.Pending},
 		Warnings: result.Warnings}
 	if len(delta.Warnings) == 0 {

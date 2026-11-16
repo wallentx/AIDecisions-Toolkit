@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +21,7 @@ const perPage = 100
 // per source and leave Complete false.
 func Collect(ctx context.Context, api API, ref github.PullRequest, opts Options) Result {
 	opts = normalizeOptions(opts)
-	c := &collector{ctx: ctx, api: api, opts: opts, ref: ref, result: Result{
+	c := &collector{ctx: ctx, api: api, opts: opts, ref: ref, reserved: 1, result: Result{
 		SchemaVersion: SchemaVersion,
 		Reference:     ref,
 		StartedAt:     time.Now().UTC(),
@@ -55,6 +54,7 @@ func Collect(ctx context.Context, api API, ref github.PullRequest, opts Options)
 	c.collectThreads(reviewer)
 	c.collectCI(start.Head.SHA)
 
+	c.checkBaseStable()
 	end, ok := c.readPullRequest(true)
 	if ok {
 		c.result.HeadStable.End = end.Head.SHA
@@ -106,6 +106,13 @@ type collector struct {
 	ref      github.PullRequest
 	result   Result
 	requests int
+	// reserved counts requests held back for the end-of-run stability reads:
+	// the pull request, plus the base branch when the base was resolved from one.
+	reserved int
+	// baseBranch and baseSHA record the branch the compare base was resolved
+	// from and the commit it resolved to, for the end-of-run base check.
+	baseBranch string
+	baseSHA    string
 }
 
 // ---- pull request metadata ----
@@ -123,6 +130,7 @@ type restBranch struct {
 
 type restPull struct {
 	Number         int        `json:"number"`
+	User           *restUser  `json:"user"`
 	State          string     `json:"state"`
 	Merged         bool       `json:"merged"`
 	MergedAt       *string    `json:"merged_at"`
@@ -147,6 +155,9 @@ func (pull restPull) info() PRInfo {
 		HeadRef: pull.Head.Ref, HeadSHA: pull.Head.SHA, MergeState: strings.ToLower(pull.MergeableState)}
 	if pull.Base.Repo != nil {
 		info.DefaultBranch = pull.Base.Repo.DefaultBranch
+	}
+	if pull.User != nil {
+		info.Author = pull.User.Login
 	}
 	return info
 }
@@ -269,11 +280,37 @@ func (c *collector) resolveBaseline(pull restPull, reviewer string) *Baseline {
 
 // ---- stack ----
 
-type restPullSummary struct {
-	Number   int        `json:"number"`
-	State    string     `json:"state"`
-	MergedAt *string    `json:"merged_at"`
-	Head     restBranch `json:"head"`
+// stackQuery looks up the base branch and the pull requests whose head is that
+// branch. GraphQL takes the branch name as a variable, so names that are not
+// valid REST path segments (for example "+" or "#") need no path escaping.
+const stackQuery = `query($owner: String!, $name: String!, $qualified: String!, $branch: String!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $qualified) { name }
+    pullRequests(headRefName: $branch, states: [OPEN, CLOSED, MERGED], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+      totalCount
+      nodes { number state headRepository { nameWithOwner } }
+    }
+  }
+}`
+
+type gqlStackPull struct {
+	Number         int    `json:"number"`
+	State          string `json:"state"`
+	HeadRepository *struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
+}
+
+type gqlStackData struct {
+	Repository *struct {
+		Ref *struct {
+			Name string `json:"name"`
+		} `json:"ref"`
+		PullRequests *struct {
+			TotalCount int             `json:"totalCount"`
+			Nodes      []*gqlStackPull `json:"nodes"`
+		} `json:"pullRequests"`
+	} `json:"repository"`
 }
 
 func (c *collector) collectStack(pull restPull) {
@@ -287,48 +324,41 @@ func (c *collector) collectStack(pull restPull) {
 		c.complete(key)
 		return
 	}
-	var branch struct {
-		Name string `json:"name"`
-	}
-	err := c.restErr(key, c.repoEndpoint()+"/branches/"+info.BaseRef, &branch)
-	switch {
-	case err == nil:
-		exists := true
-		stack.BaseBranchExists = &exists
-	case isKind(err, github.KindNotFound):
-		exists := false
-		stack.BaseBranchExists = &exists
-		c.warn("base_branch_missing")
-	default:
-		c.failWithError(key, err)
-	}
-	query := url.Values{"head": {c.ref.Owner + ":" + info.BaseRef}, "state": {"all"}, "per_page": {strconv.Itoa(perPage)}}
-	var pulls []restPullSummary
-	if !c.rest(key, c.repoEndpoint()+"/pulls?"+query.Encode(), &pulls, false) {
+	var data gqlStackData
+	variables := map[string]any{"owner": c.ref.Owner, "name": c.ref.Name,
+		"qualified": "refs/heads/" + info.BaseRef, "branch": info.BaseRef}
+	if !c.graphQL(key, stackQuery, variables, &data, false) {
 		return
 	}
-	c.addItems(key, len(pulls))
-	var chosen *restPullSummary
-	for index := range pulls {
-		candidate := pulls[index]
-		if candidate.Head.Ref != info.BaseRef || candidate.Head.Repo == nil ||
-			!strings.EqualFold(candidate.Head.Repo.FullName, c.ref.Owner+"/"+c.ref.Name) || candidate.Number == pull.Number {
+	if data.Repository == nil || data.Repository.PullRequests == nil {
+		c.fail(key, "invalid_response", "stack response omitted the repository or its pull requests")
+		return
+	}
+	exists := data.Repository.Ref != nil
+	stack.BaseBranchExists = &exists
+	if !exists {
+		c.warn("base_branch_missing")
+	}
+	pulls := data.Repository.PullRequests
+	c.addItems(key, len(pulls.Nodes))
+	var chosen *gqlStackPull
+	for _, candidate := range pulls.Nodes {
+		if candidate == nil || candidate.HeadRepository == nil ||
+			!strings.EqualFold(candidate.HeadRepository.NameWithOwner, c.ref.Owner+"/"+c.ref.Name) || candidate.Number == pull.Number {
 			continue
 		}
-		if chosen == nil || (candidate.State == "open") != (chosen.State == "open") && candidate.State == "open" ||
-			(candidate.State == "open") == (chosen.State == "open") && candidate.Number > chosen.Number {
-			chosen = &candidate
+		open := candidate.State == "OPEN"
+		if chosen == nil || open != (chosen.State == "OPEN") && open ||
+			open == (chosen.State == "OPEN") && candidate.Number > chosen.Number {
+			chosen = candidate
 		}
 	}
 	if chosen != nil {
-		state := chosen.State
-		if chosen.MergedAt != nil {
-			state = "merged"
-		}
-		stack.BasePR = &BasePR{Number: chosen.Number, State: state, Merged: chosen.MergedAt != nil}
+		merged := chosen.State == "MERGED"
+		stack.BasePR = &BasePR{Number: chosen.Number, State: strings.ToLower(chosen.State), Merged: merged}
 	}
-	if len(pulls) == perPage {
-		c.addLimitation(key, "base pull request search returned a full page; older matches were not read")
+	if pulls.TotalCount > len(pulls.Nodes) {
+		c.addLimitation(key, "base pull request search matched more than 100 pull requests; older matches were not read")
 	}
 	c.complete(key)
 }
@@ -417,12 +447,16 @@ func (c *collector) collectThreads(reviewer string) {
 		c.fail(key, "dependency_failed", "reviewer login was unavailable")
 		return
 	}
+	author := c.result.PR.Author
+	if author == "" {
+		c.addLimitation(key, "pull request author login was unavailable; author_replied_after is false")
+	}
 	var cursor any
 	seen := map[string]bool{}
 	for page := 1; ; page++ {
 		var data gqlThreadsData
 		variables := map[string]any{"owner": c.ref.Owner, "name": c.ref.Name, "number": c.ref.Number, "cursor": cursor}
-		if !c.graphQL(key, reviewThreadsQuery, variables, &data) {
+		if !c.graphQL(key, reviewThreadsQuery, variables, &data, false) {
 			return
 		}
 		if data.Repository == nil || data.Repository.PullRequest == nil || data.Repository.PullRequest.ReviewThreads == nil {
@@ -456,7 +490,7 @@ func (c *collector) collectThreads(reviewer string) {
 				}
 				comments = append(comments, more...)
 			}
-			c.addThread(node, comments, reviewer)
+			c.addThread(node, comments, reviewer, author)
 		}
 		info := pr.ReviewThreads.PageInfo
 		if !info.HasNextPage {
@@ -479,7 +513,7 @@ func (c *collector) threadComments(id string, cursor *string) ([]*gqlComment, bo
 			return nil, false
 		}
 		var data gqlThreadCommentsData
-		if !c.graphQL(SourceThreads, threadCommentsQuery, map[string]any{"id": id, "cursor": *cursor}, &data) {
+		if !c.graphQL(SourceThreads, threadCommentsQuery, map[string]any{"id": id, "cursor": *cursor}, &data, false) {
 			return nil, false
 		}
 		if data.Node == nil || data.Node.Comments == nil {
@@ -499,7 +533,10 @@ func (c *collector) threadComments(id string, cursor *string) ([]*gqlComment, bo
 	return comments, true
 }
 
-func (c *collector) addThread(node *gqlThread, comments []*gqlComment, reviewer string) {
+// addThread records one reviewer thread. Only a comment by the pull request
+// author after the reviewer's last comment sets AuthorRepliedAfter; the latest
+// comment after it from anyone is kept as the last reply.
+func (c *collector) addThread(node *gqlThread, comments []*gqlComment, reviewer, author string) {
 	thread := Thread{ThreadID: node.ID, FirstCommentID: bigInt(comments[0].FullDatabaseID), Path: node.Path,
 		Line: node.Line, IsResolved: node.IsResolved, IsOutdated: node.IsOutdated}
 	lastReviewer := -1
@@ -508,17 +545,19 @@ func (c *collector) addThread(node *gqlThread, comments []*gqlComment, reviewer 
 			lastReviewer = index
 		}
 	}
-	for index := len(comments) - 1; index > lastReviewer; index-- {
-		comment := comments[index]
+	for _, comment := range comments[lastReviewer+1:] {
 		if comment == nil {
 			continue
 		}
-		thread.AuthorRepliedAfter = true
+		login := ""
 		if comment.Author != nil {
-			thread.LastReplyAuthor = comment.Author.Login
+			login = comment.Author.Login
 		}
+		if author != "" && login != "" && sameLogin(login, author) {
+			thread.AuthorRepliedAfter = true
+		}
+		thread.LastReplyBy = login
 		thread.LastReplyExcerpt, thread.LastReplyClipped = excerpt(comment.Body, c.opts.TextLimit)
-		break
 	}
 	threads := &c.result.Threads
 	threads.Items = append(threads.Items, thread)
@@ -526,7 +565,7 @@ func (c *collector) addThread(node *gqlThread, comments []*gqlComment, reviewer 
 	if !thread.IsResolved {
 		threads.Unresolved++
 		if thread.AuthorRepliedAfter {
-			threads.UnresolvedWithReply++
+			threads.UnresolvedWithAuthorReply++
 		}
 	}
 }
@@ -773,8 +812,8 @@ func (c *collector) restErr(key, endpoint string, out any) error {
 	return err
 }
 
-func (c *collector) graphQL(key, query string, variables map[string]any, out any) bool {
-	if !c.takeRequest(key, false) {
+func (c *collector) graphQL(key, query string, variables map[string]any, out any, final bool) bool {
+	if !c.takeRequest(key, final) {
 		return false
 	}
 	err := c.api.GraphQL(c.ctx, query, variables, out)
@@ -788,7 +827,7 @@ func (c *collector) graphQL(key, query string, variables map[string]any, out any
 
 var errRequestLimit = errors.New("request limit reached")
 
-// takeRequest reserves the last request for the final head-stability read.
+// takeRequest holds back c.reserved requests for the final stability reads.
 func (c *collector) takeRequest(key string, final bool) bool {
 	if c.ctx.Err() != nil {
 		c.fail(key, "canceled", "collection context was canceled")
@@ -796,7 +835,7 @@ func (c *collector) takeRequest(key string, final bool) bool {
 	}
 	limit := c.opts.MaxRequests
 	if !final {
-		limit--
+		limit -= c.reserved
 	}
 	if c.requests >= limit {
 		c.fail(key, "request_limit", "API request limit reached")

@@ -49,7 +49,7 @@ func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
 			obj{"name": "lint", "status": "completed", "conclusion": "success"}}})
 	case strings.HasSuffix(endpoint, "/status?per_page=100&page=1"):
 		return copyJSON(out, obj{"total_count": 0, "statuses": []any{}})
-	case strings.Contains(endpoint, "/compare/main..."):
+	case strings.Contains(endpoint, "/compare/"+baseTip+"..."):
 		return copyJSON(out, obj{"status": "ahead", "ahead_by": 1, "total_commits": 1,
 			"merge_base_commit": obj{"sha": strings.Repeat("3", 40)}, "commits": []any{}, "files": []any{}})
 	}
@@ -102,9 +102,18 @@ func (fake *fakeAPI) GraphQL(_ context.Context, query string, variables map[stri
 		}
 		return copyJSON(out, obj{"search": fake.pages[page]})
 	}
+	switch {
+	case strings.Contains(query, "target { oid }"):
+		return copyJSON(out, obj{"repository": obj{"ref": obj{"target": obj{"oid": baseTip}}}})
+	case strings.Contains(query, "pullRequests(headRefName"):
+		return copyJSON(out, obj{"repository": obj{"ref": obj{"name": "main"}, "pullRequests": obj{"totalCount": 0, "nodes": []any{}}}})
+	}
 	threads := obj{"pageInfo": obj{"hasNextPage": false}, "nodes": []any{}}
 	return copyJSON(out, obj{"repository": obj{"pullRequest": obj{"reviewDecision": "APPROVED", "reviewThreads": threads}}})
 }
+
+// baseTip is the resolved tip of the PRs' base branch.
+var baseTip = strings.Repeat("b", 40)
 
 func copyJSON(out, value any) error {
 	data, err := json.Marshal(value)

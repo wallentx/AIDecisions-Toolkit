@@ -99,6 +99,7 @@ type PRInfo struct {
 	BaseSHA        string `json:"base_sha"`
 	HeadRef        string `json:"head_ref"`
 	HeadSHA        string `json:"head_sha"`
+	Author         string `json:"author"`
 	DefaultBranch  string `json:"default_branch"`
 	ReviewDecision string `json:"review_decision"`
 	MergeState     string `json:"merge_state"`
@@ -128,13 +129,16 @@ type PRDiff struct {
 }
 
 // DiffBase names the comparison base. Source is base_ref, default_branch, or
-// recorded_base_sha (closed and merged pull requests).
+// recorded_base_sha (closed and merged pull requests). SHA is the commit the
+// branch resolved to once at the start; every compare and the base-history walk
+// use it, so a base update during collection cannot mix snapshots.
 type DiffBase struct {
 	Ref    string `json:"ref"`
+	SHA    string `json:"sha"`
 	Source string `json:"source"`
 }
 
-// DiffSide describes one three-dot compare. Base differs from DiffBase.Ref only
+// DiffSide describes one three-dot compare. Base differs from DiffBase.SHA only
 // when the baseline side was realigned past rewritten base commits.
 type DiffSide struct {
 	Commit    string `json:"commit"`
@@ -161,12 +165,16 @@ type HunkChange struct {
 }
 
 type Threads struct {
-	Total               int      `json:"total"`
-	Unresolved          int      `json:"unresolved"`
-	UnresolvedWithReply int      `json:"unresolved_with_reply"`
-	Items               []Thread `json:"items"`
+	Total                     int      `json:"total"`
+	Unresolved                int      `json:"unresolved"`
+	UnresolvedWithAuthorReply int      `json:"unresolved_with_author_reply"`
+	Items                     []Thread `json:"items"`
 }
 
+// Thread is one of the reviewer's threads. AuthorRepliedAfter is true only when
+// the pull request author commented after the reviewer's last comment. The
+// LastReply fields describe the latest comment after the reviewer's last
+// comment, whoever wrote it.
 type Thread struct {
 	ThreadID           string `json:"thread_id"`
 	FirstCommentID     int64  `json:"first_comment_id"`
@@ -175,7 +183,7 @@ type Thread struct {
 	IsResolved         bool   `json:"is_resolved"`
 	IsOutdated         bool   `json:"is_outdated"`
 	AuthorRepliedAfter bool   `json:"author_replied_after"`
-	LastReplyAuthor    string `json:"last_reply_author,omitempty"`
+	LastReplyBy        string `json:"last_reply_by,omitempty"`
 	LastReplyExcerpt   string `json:"last_reply_excerpt,omitempty"`
 	LastReplyClipped   bool   `json:"last_reply_clipped,omitempty"`
 }

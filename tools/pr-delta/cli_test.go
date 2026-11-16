@@ -109,7 +109,13 @@ func (fake *cliFake) REST(_ context.Context, endpoint string, out any) error {
 	return &github.Error{Kind: github.KindNotFound, Message: "not found"}
 }
 
-func (fake *cliFake) GraphQL(_ context.Context, _ string, _ map[string]any, out any) error {
+func (fake *cliFake) GraphQL(_ context.Context, query string, _ map[string]any, out any) error {
+	switch {
+	case strings.Contains(query, "target { oid }"):
+		return copyJSON(out, map[string]any{"repository": map[string]any{"ref": map[string]any{"target": map[string]any{"oid": strings.Repeat("b", 40)}}}})
+	case strings.Contains(query, "pullRequests(headRefName"):
+		return copyJSON(out, map[string]any{"repository": map[string]any{"ref": map[string]any{"name": "main"}, "pullRequests": map[string]any{"totalCount": 0, "nodes": []any{}}}})
+	}
 	threads := map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []any{}}
 	return copyJSON(out, map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewDecision": "APPROVED", "reviewThreads": threads}}})
 }
@@ -131,7 +137,8 @@ func cliPull(head string) map[string]any {
 func TestCLIExitCodes(t *testing.T) {
 	configPath := configForCLI(t)
 	headSHA := strings.Repeat("2", 40)
-	compareEP := "repos/acme/widget/compare/main..." + headSHA + "?per_page=100&page=1"
+	baseTip := strings.Repeat("b", 40)
+	compareEP := "repos/acme/widget/compare/" + baseTip + "..." + headSHA + "?per_page=100&page=1"
 	stable := func(t *testing.T) *cliFake {
 		return &cliFake{t: t, pulls: []map[string]any{cliPull(headSHA)}, rest: map[string]any{
 			compareEP: map[string]any{"status": "ahead", "ahead_by": 0, "total_commits": 0,

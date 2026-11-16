@@ -84,7 +84,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	jsonOutput := flags.Bool("json", false, "emit JSON evidence")
 	textOutput := flags.Bool("text", false, "emit a short readable summary")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: AID.pr-delta [options] https://github.com/OWNER/REPO/pull/NUMBER\n       AID.pr-delta --repo OWNER/REPO --pr NUMBER [--reviewer LOGIN] [--since-commit SHA] [options]\n\nReport what changed in a pull request since a reviewer's last review. Read-only; no model call.\nExit 0: complete; 3: incomplete, missing baseline, or head moved; 2: usage; 1: fatal error.")
+		fmt.Fprintln(stderr, "Usage: AID.pr-delta [options] https://github.com/OWNER/REPO/pull/NUMBER\n       AID.pr-delta --repo OWNER/REPO --pr NUMBER [--reviewer LOGIN] [--since-commit SHA] [options]\n\nReport what changed in a pull request since a reviewer's last review. Read-only; no model call.\nExit 0: complete; 3: incomplete, missing baseline, or head or base moved; 2: usage; 1: fatal error.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(interspersedFlags(flags, args)); err != nil {

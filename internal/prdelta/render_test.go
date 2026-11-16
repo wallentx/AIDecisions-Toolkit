@@ -74,8 +74,56 @@ func TestWriteTextSummarizesDelta(t *testing.T) {
 	if err := WriteText(&out, result); err != nil {
 		t.Fatal(err)
 	}
-	want := "baseline APPROVED at 111111111; head 222222222 rebased; PR diff changed (1 files); threads 0 (0 unresolved, 0 with reply); CI 8 success; base PR #474 open"
+	want := "baseline APPROVED at 111111111; head 222222222 rebased; PR diff changed (1 files); threads 0 (0 unresolved, 0 with author reply); CI 8 success; base PR #474 open"
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("text = %q, want line %q", out.String(), want)
+	}
+}
+
+func TestRenderTrimMarksOwningSources(t *testing.T) {
+	sources := func() map[string]evidence.Source {
+		return map[string]evidence.Source{SourceChecks: {Complete: true}, SourceStatuses: {Complete: true},
+			SourceHeadRelation: {Complete: true}, SourceCommits: {Complete: true}, SourcePRDiff: {Complete: true}}
+	}
+	long := strings.Repeat("x", 60)
+	ci := renderFixture(0)
+	ci.Sources = sources()
+	ci.CI.NonSuccess = []CIRecord{{Name: "check", Kind: "check_run", Conclusion: "failure"}}
+	for index := range 200 {
+		ci.CI.NonSuccess = append(ci.CI.NonSuccess, CIRecord{Name: fmt.Sprintf("status-%d-%s", index, long), Kind: "status", Conclusion: "failure"})
+	}
+	commits := func(relation string) Result {
+		result := renderFixture(0)
+		result.Sources = sources()
+		result.HeadRelation = relation
+		for index := range 200 {
+			result.NewCommits = append(result.NewCommits, CommitRef{SHA: headSHA, MessageFirstLine: fmt.Sprintf("commit %d %s", index, long)})
+		}
+		return result
+	}
+	for _, test := range []struct {
+		name             string
+		result           Result
+		marked, unmarked string
+	}{
+		{"statuses omitted", ci, SourceStatuses, SourceChecks},
+		{"rebased commits", commits(RelationRebased), SourceCommits, SourceHeadRelation},
+		{"fast-forward commits", commits(RelationFastForward), SourceHeadRelation, SourceCommits},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, rendered, err := Render(test.result, 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if marked := rendered.Sources[test.marked]; marked.Complete || len(marked.Limitations) != 1 || marked.Limitations[0] != "output_budget" {
+				t.Errorf("%s = %+v, want output_budget", test.marked, marked)
+			}
+			if unmarked := rendered.Sources[test.unmarked]; !unmarked.Complete || len(unmarked.Limitations) != 0 {
+				t.Errorf("%s = %+v, want untouched", test.unmarked, unmarked)
+			}
+			if rendered.Complete || !rendered.Output.Truncated {
+				t.Errorf("complete = %v truncated = %v", rendered.Complete, rendered.Output.Truncated)
+			}
+		})
 	}
 }
