@@ -2,6 +2,7 @@ package prdelta
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -80,26 +81,76 @@ func TestCLIRejectsInvalidRequestsBeforeAPI(t *testing.T) {
 	}
 }
 
+// cliFake is a minimal read-only transport for exit-code tests. The
+// comparison itself is covered in internal/prdelta.
+type cliFake struct {
+	t         *testing.T
+	pulls     []map[string]any
+	pullReads int
+	rest      map[string]any
+}
+
+func (fake *cliFake) REST(_ context.Context, endpoint string, out any) error {
+	if endpoint == "repos/acme/widget/pulls/7" {
+		index := min(fake.pullReads, len(fake.pulls)-1)
+		fake.pullReads++
+		return copyJSON(out, fake.pulls[index])
+	}
+	if value, ok := fake.rest[endpoint]; ok {
+		return copyJSON(out, value)
+	}
+	switch {
+	case strings.Contains(endpoint, "/check-runs?"):
+		return copyJSON(out, map[string]any{"total_count": 0, "check_runs": []any{}})
+	case strings.Contains(endpoint, "/status?"):
+		return copyJSON(out, map[string]any{"total_count": 0, "statuses": []any{}})
+	}
+	fake.t.Errorf("unexpected REST endpoint %q", endpoint)
+	return &github.Error{Kind: github.KindNotFound, Message: "not found"}
+}
+
+func (fake *cliFake) GraphQL(_ context.Context, _ string, _ map[string]any, out any) error {
+	threads := map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []any{}}
+	return copyJSON(out, map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"reviewDecision": "APPROVED", "reviewThreads": threads}}})
+}
+
+func copyJSON(out, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+func cliPull(head string) map[string]any {
+	return map[string]any{"number": 7, "state": "open", "mergeable_state": "clean",
+		"head": map[string]any{"ref": "topic", "sha": head, "repo": map[string]any{"full_name": "acme/widget"}},
+		"base": map[string]any{"ref": "main", "sha": strings.Repeat("e", 40), "repo": map[string]any{"full_name": "acme/widget", "default_branch": "main"}}}
+}
+
 func TestCLIExitCodes(t *testing.T) {
 	configPath := configForCLI(t)
-	stable := func(t *testing.T) *fakeAPI {
-		fake := newFake(t, pullAt(headSHA, "main", "open"))
-		fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	headSHA := strings.Repeat("2", 40)
+	compareEP := "repos/acme/widget/compare/main..." + headSHA + "?per_page=100&page=1"
+	stable := func(t *testing.T) *cliFake {
+		return &cliFake{t: t, pulls: []map[string]any{cliPull(headSHA)}, rest: map[string]any{
+			compareEP: map[string]any{"status": "ahead", "ahead_by": 0, "total_commits": 0,
+				"merge_base_commit": map[string]any{"sha": strings.Repeat("3", 40)}, "commits": []any{}, "files": []any{}},
+		}}
+	}
+	moved := func(t *testing.T) *cliFake {
+		fake := stable(t)
+		fake.pulls = append(fake.pulls, cliPull(strings.Repeat("7", 40)))
 		return fake
 	}
-	moved := func(t *testing.T) *fakeAPI {
+	missing := func(t *testing.T) *cliFake {
 		fake := stable(t)
-		fake.pulls = append(fake.pulls, pullAt(sha("7"), "main", "open"))
-		return fake
-	}
-	missing := func(t *testing.T) *fakeAPI {
-		fake := stable(t)
-		fake.rest[reviewsEP()] = []any{}
+		fake.rest["repos/acme/widget/pulls/7/reviews?per_page=100&page=1"] = []any{}
 		return fake
 	}
 	for _, test := range []struct {
 		name string
-		fake func(*testing.T) *fakeAPI
+		fake func(*testing.T) *cliFake
 		args []string
 		code int
 	}{

@@ -17,6 +17,7 @@ import (
 	"aid/internal/buildinfo"
 	"aid/internal/config"
 	"aid/internal/github"
+	core "aid/internal/prdelta"
 
 	"golang.org/x/term"
 )
@@ -32,6 +33,9 @@ const (
 	command = "AID.pr-delta"
 )
 
+// API is the read-only GitHub transport used by the collector.
+type API = core.API
+
 type settings struct {
 	GH               string `yaml:"gh"`
 	Hostname         string `yaml:"hostname"`
@@ -45,7 +49,7 @@ type settings struct {
 }
 
 func defaults() settings {
-	collection := DefaultOptions()
+	collection := core.DefaultOptions()
 	return settings{GH: "gh", Hostname: "github.com", MaxPages: collection.MaxPages, MaxRequests: collection.MaxRequests,
 		MaxCommitPatches: collection.MaxCommitPatches, MaxHunks: collection.MaxHunksPerFile,
 		MaxResponseBytes: 8 << 20, MaxOutputBytes: 128 << 10, TextLimit: collection.TextLimit}
@@ -151,7 +155,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if *maxResponse < 4096 || *maxResponse > 32<<20 || *maxOutput < 4096 || *maxOutput > 16<<20 || *textLimit < 0 || *textLimit > 1<<16 {
 		return cliError(stderr, 2, "invalid response, output, or text limit")
 	}
-	if *reviewer != "" && !ValidLogin(*reviewer) {
+	if *reviewer != "" && !core.ValidLogin(*reviewer) {
 		return cliError(stderr, 2, "--reviewer must be a GitHub login")
 	}
 	if *since != "" && !validCommitPrefix(*since) {
@@ -165,7 +169,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if err != nil {
 		return cliError(stderr, 2, "use a valid HTTPS PR URL matching --hostname, or --repo OWNER/REPO --pr NUMBER")
 	}
-	opts := Options{Reviewer: *reviewer, SinceCommit: strings.ToLower(*since), MaxPages: *maxPages, MaxRequests: *maxRequests,
+	opts := core.Options{Reviewer: *reviewer, SinceCommit: strings.ToLower(*since), MaxPages: *maxPages, MaxRequests: *maxRequests,
 		MaxCommitPatches: *maxPatches, MaxHunksPerFile: *maxHunks, TextLimit: *textLimit}
 	if *maxPatches == 0 {
 		opts.MaxCommitPatches = -1
@@ -188,7 +192,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 			ReadOnly      bool               `json:"read_only"`
 			Timeout       float64            `json:"timeout_seconds"`
 			Limits        map[string]int64   `json:"limits"`
-		}{SchemaVersion, "dry-run", ref, reviewerPlan, baselinePlan, true, *timeout, map[string]int64{
+		}{core.SchemaVersion, "dry-run", ref, reviewerPlan, baselinePlan, true, *timeout, map[string]int64{
 			"max_pages": int64(*maxPages), "max_requests": int64(*maxRequests),
 			"max_commit_patches": int64(*maxPatches), "max_hunks": int64(*maxHunks),
 			"max_response_bytes": *maxResponse, "max_output_bytes": int64(*maxOutput), "text_limit": int64(*textLimit),
@@ -204,8 +208,8 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	defer cancel()
 	fmt.Fprintf(stderr, "%s: collecting %s/%s#%d\n", command, ref.Owner, ref.Name, ref.Number)
 	api := newAPI(github.Client{Executable: *gh, Host: ref.Host, MaxResponseBytes: *maxResponse})
-	result := Collect(ctx, api, ref, opts)
-	encoded, rendered, err := render(result, *maxOutput)
+	result := core.Collect(ctx, api, ref, opts)
+	encoded, rendered, err := core.Render(result, *maxOutput)
 	if err != nil {
 		return cliError(stderr, 1, "cannot encode evidence within output budget; increase --max-output-bytes")
 	}
@@ -221,7 +225,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 		}
 	}
 	if format == "text" {
-		err = writeText(stdout, rendered)
+		err = core.WriteText(stdout, rendered)
 	} else {
 		_, err = stdout.Write(encoded)
 	}

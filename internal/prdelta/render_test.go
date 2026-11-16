@@ -24,12 +24,12 @@ func renderFixture(files int) Result {
 
 func TestRenderOutputCapTrimsFilesAndMarksIncomplete(t *testing.T) {
 	result := renderFixture(200)
-	data, rendered, err := render(result, 4096)
+	data, rendered, err := Render(result, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(data) > 4096 || rendered.Complete {
-		t.Fatalf("render() = %d bytes, complete %v", len(data), rendered.Complete)
+		t.Fatalf("Render() = %d bytes, complete %v", len(data), rendered.Complete)
 	}
 	var decoded struct {
 		Complete bool `json:"complete"`
@@ -58,9 +58,9 @@ func TestRenderOutputCapTrimsFilesAndMarksIncomplete(t *testing.T) {
 }
 
 func TestRenderSmallResultIsUntouched(t *testing.T) {
-	data, rendered, err := render(renderFixture(2), 128<<10)
+	data, rendered, err := Render(renderFixture(2), 128<<10)
 	if err != nil || !rendered.Complete || rendered.Output.Truncated || !bytes.HasSuffix(data, []byte("\n")) {
-		t.Fatalf("render() complete %v truncated %v err %v", rendered.Complete, rendered.Output.Truncated, err)
+		t.Fatalf("Render() complete %v truncated %v err %v", rendered.Complete, rendered.Output.Truncated, err)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestWriteTextSummarizesDelta(t *testing.T) {
 	result.Stack = Stack{BasePR: &BasePR{Number: 474, State: "open"}}
 	result.CI.Counts.Success = 8
 	var out bytes.Buffer
-	if err := writeText(&out, result); err != nil {
+	if err := WriteText(&out, result); err != nil {
 		t.Fatal(err)
 	}
 	want := "baseline APPROVED at 111111111; head 222222222 rebased; PR diff changed (1 files); threads 0 (0 unresolved, 0 with reply); CI 8 success; base PR #474 open"

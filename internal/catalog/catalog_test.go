@@ -41,3 +41,61 @@ func TestRejectsEscapingPackage(t *testing.T) {
 		t.Fatal("accepted escaped package path")
 	}
 }
+
+func TestCollectorBlockIsOptionalAndValidated(t *testing.T) {
+	plain, err := parse([]byte(`{"id":"pr","command":"AID.pr","version":"0.1.0","description":"d","package":"./cmd/AID.pr"}`), []byte("skill"))
+	if err != nil || plain.Collector != nil {
+		t.Fatalf("plain manifest = %+v, %v", plain, err)
+	}
+	valid := `{"id":"queue","command":"AID.queue","version":"0.1.0","description":"d","package":"./cmd/AID.queue",
+	  "collector":{"name":"github_queue","description":"q","args":["--json","--no-delta"],"workspace_flag":"--workspace","ttl_seconds":60,"timeout_seconds":60}}`
+	tool, err := parse([]byte(valid), []byte("skill"))
+	if err != nil || tool.Collector == nil || tool.Collector.Name != "github_queue" || tool.Collector.TTLSeconds != 60 {
+		t.Fatalf("collector manifest = %+v, %v", tool.Collector, err)
+	}
+	for name, collector := range map[string]string{
+		"bad name":       `{"name":"Bad-Name","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"no description": `{"name":"q","description":"","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"no json":        `{"name":"q","description":"q","args":["--text"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"shell arg":      `{"name":"q","description":"q","args":["--json","--x=$(id)"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"positional":     `{"name":"q","description":"q","args":["--json","value"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"bad flag":       `{"name":"q","description":"q","args":["--json"],"workspace_flag":"-w x","ttl_seconds":1,"timeout_seconds":1}`,
+		"zero timeout":   `{"name":"q","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":0}`,
+		"negative ttl":   `{"name":"q","description":"q","args":["--json"],"ttl_seconds":-1,"timeout_seconds":1}`,
+	} {
+		data := `{"id":"queue","command":"AID.queue","version":"0.1.0","description":"d","package":"./cmd/AID.queue","collector":` + collector + `}`
+		if _, err := parse([]byte(data), []byte("skill")); err == nil {
+			t.Errorf("%s: accepted invalid collector", name)
+		}
+	}
+}
+
+func TestDuplicateCollectorNamesRejected(t *testing.T) {
+	files := fstest.MapFS{}
+	for _, id := range []string{"one", "two"} {
+		data := `{"id":"` + id + `","command":"AID.` + id + `","version":"0.1.0","description":"d","package":"./cmd/AID.` + id + `",
+		  "collector":{"name":"same","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}}`
+		files["tools/"+id+"/tool.json"] = &fstest.MapFile{Data: []byte(data)}
+		files["tools/"+id+"/SKILL.md"] = &fstest.MapFile{Data: []byte("skill")}
+	}
+	if _, err := fromFS(files); err == nil {
+		t.Fatal("accepted duplicate collector names")
+	}
+}
+
+func TestEmbeddedCatalogCollectors(t *testing.T) {
+	tools, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Tool{}
+	for _, tool := range tools {
+		byID[tool.ID] = tool
+	}
+	if queue := byID["review-queue"].Collector; queue == nil || queue.Name != "github_review_queue" || queue.WorkspaceFlag != "--workspace" {
+		t.Errorf("review-queue collector = %+v", queue)
+	}
+	if byID["pr-delta"].Collector != nil {
+		t.Error("pr-delta should not declare a collector")
+	}
+}

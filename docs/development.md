@@ -17,6 +17,7 @@ AIDecisions-Toolkit/
 |   |-- AID.discover/main.go
 |   |-- AID.pr/main.go
 |   |-- AID.pr-delta/main.go
+|   |-- AID.review-queue/main.go
 |   |-- AID.runtime/main.go
 |   `-- aid-build/main.go
 |-- tools/diff/
@@ -37,6 +38,8 @@ AIDecisions-Toolkit/
 |   |-- builder/
 |   |-- installer/
 |   |-- github/
+|   |-- prdelta/
+|   |-- mcp/
 |   |-- evidence/
 |   |-- update/
 |   `-- intake/template.md
@@ -48,10 +51,17 @@ transport and infrastructure live under `internal/`. The launcher automatically
 embeds `tools/*/tool.json` and `tools/*/SKILL.md`; no manual tool registry edit is
 needed. A new manifest's package must be `./cmd/AID.<id>`.
 
-`AID.pr`, `AID.pr-delta`, and `AID.ci` share GitHub reference validation,
-fixed-argument `gh` transport, source status, and bounded I/O. CI log reads add
-an in-memory raw GET operation without changing PR JSON request behavior.
-Attempt selection and log processing remain CI-specific; no tool imports another.
+`AID.pr`, `AID.pr-delta`, `AID.review-queue`, and `AID.ci` share GitHub
+reference validation, fixed-argument `gh` transport, source status, and bounded
+I/O. CI log reads add an in-memory raw GET operation without changing PR JSON
+request behavior. Attempt selection and log processing remain CI-specific; no
+tool imports another. The pull-request delta comparison lives in
+`internal/prdelta`, which `AID.pr-delta` and `AID.review-queue` both call.
+
+A manifest may declare an optional `collector` block (name, description, fixed
+`--json` arguments, `workspace_flag`, `ttl_seconds`, `timeout_seconds`). The
+stdio MCP server in `internal/mcp`, started with `AID --mcp`, runs only those
+collectors and the fixed `AID.pr-delta` call. See [mcp.md](mcp.md).
 
 `tool.json` is the source of truth for each tool's version. Root `VERSION`
 identifies the whole tested release. Changing shared code bumps the versions

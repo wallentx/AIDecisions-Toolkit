@@ -11,10 +11,10 @@ import (
 	"aid/internal/evidence"
 )
 
-// render encodes the result within maxBytes. Lists are trimmed from their
+// Render encodes the result within maxBytes. Lists are trimmed from their
 // least important tail; any trim marks the owning source and the result
 // incomplete so a capped document never looks complete.
-func render(result Result, maxBytes int) ([]byte, Result, error) {
+func Render(result Result, maxBytes int) ([]byte, Result, error) {
 	output := &OutputInfo{MaxBytes: maxBytes, OmittedItems: map[string]int{}}
 	result.Output = output
 	result.Sources = cloneSources(result.Sources)
@@ -105,8 +105,8 @@ func cloneSources(sources map[string]evidence.Source) map[string]evidence.Source
 	return clone
 }
 
-// writeText prints a short human summary of a rendered result.
-func writeText(w io.Writer, result Result) error {
+// WriteText prints a short human summary of a rendered result.
+func WriteText(w io.Writer, result Result) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "AID.pr-delta %s/%s#%d (%s) reviewer %s\n", result.Reference.Owner, result.Reference.Name,
 		result.Reference.Number, orDash(result.PR.State), orDash(result.Reviewer))
