@@ -101,7 +101,7 @@ func (s *Server) callTool(ctx context.Context, name string, args map[string]json
 	case "pr_delta":
 		var argv []string
 		if argv, argErr = prDeltaArgs(args); argErr == nil {
-			envelope := s.runPRDelta(argv)
+			envelope := s.runPRDelta(ctx, argv)
 			payload, failed = envelope, envelope.Error != nil
 		}
 	default:
@@ -159,29 +159,42 @@ func (s *Server) runCollector(ctx context.Context, spec collectorSpec, refresh, 
 		args = append(args, spec.WorkspaceFlag, root.Root)
 		key += "\x00" + root.Root
 	}
-	outcome, cached := s.cache.get(key, spec.TTL, refresh, func() runOutcome {
-		return s.execute(spec.Command, args, spec.Timeout)
+	if spec.TimeoutFlag != "" {
+		args = append(args, spec.TimeoutFlag, childTimeout(spec.Timeout))
+	}
+	outcome, cached := s.cache.get(ctx, key, spec.TTL, refresh, func(runCtx context.Context) runOutcome {
+		return s.execute(runCtx, spec.Command, args, spec.Timeout)
 	})
 	envelope := s.envelope(spec.Name, spec.Command, outcome, cached, full)
 	envelope.Workspace = ws
 	return envelope
 }
 
-func (s *Server) runPRDelta(args []string) Envelope {
+func (s *Server) runPRDelta(ctx context.Context, args []string) Envelope {
 	command := s.prDelta
 	if command == "" {
 		command = "AID.pr-delta"
 	}
-	return s.envelope("pr_delta", command, s.execute(command, args, s.opts.PRDeltaTimeout), false, true)
+	args = append(args, "--timeout", childTimeout(s.opts.PRDeltaTimeout))
+	return s.envelope("pr_delta", command, s.execute(ctx, command, args, s.opts.PRDeltaTimeout), false, true)
 }
 
-func (s *Server) execute(command string, args []string, timeout time.Duration) runOutcome {
+// childTimeout is the --timeout value given to a child whose run the server
+// kills after deadline. The margin leaves the child time to stop its own
+// requests and print a partial result (exit 3) before the server's deadline.
+func childTimeout(deadline time.Duration) string {
+	margin := min(max(deadline*15/100, 500*time.Millisecond), 10*time.Second)
+	budget := max(deadline-margin, deadline/2)
+	return strconv.FormatFloat(budget.Seconds(), 'f', -1, 64)
+}
+
+func (s *Server) execute(ctx context.Context, command string, args []string, timeout time.Duration) runOutcome {
 	path, err := s.opts.Resolve(command)
 	if err != nil {
 		return runOutcome{At: s.opts.Now().UTC(), Error: &CollectorError{"exec_failed", "collector executable was not found"}}
 	}
 	s.logf("running %s", command)
-	return run(path, args, s.opts.Env, timeout, s.opts.Now)
+	return run(ctx, path, args, s.opts.Env, timeout, s.opts.Now)
 }
 
 func (s *Server) envelope(name, command string, outcome runOutcome, cached, full bool) Envelope {

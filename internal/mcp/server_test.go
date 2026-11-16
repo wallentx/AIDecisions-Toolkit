@@ -471,7 +471,7 @@ func TestPRDeltaArgumentValidation(t *testing.T) {
 	result, _ := ts.callTool(context.Background(), "pr_delta", arguments)
 	payload, isError := toolText(t, map[string]any{"result": roundTrip(t, result)})
 	args := payload["result"].(map[string]any)["args"]
-	want := []any{"--json", "--repo", "acme/widget.go", "--pr", "7", "--reviewer", "octo[bot]", "--since-commit", "ABCDEF1"}
+	want := []any{"--json", "--repo", "acme/widget.go", "--pr", "7", "--reviewer", "octo[bot]", "--since-commit", "ABCDEF1", "--timeout", "110"}
 	if isError || !reflect.DeepEqual(args, want) || payload["name"] != "pr_delta" || payload["cached"] != false {
 		t.Errorf("valid pr_delta payload = %v", payload)
 	}
@@ -501,7 +501,7 @@ func TestRootsListAndCwdFallback(t *testing.T) {
 	}
 	// The call waits for the roots response, which arrives afterwards.
 	s.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"collector","arguments":{"name":"github_queue"}}}`)
-	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(root)}).String()
+	uri := fileURI(root)
 	reply, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request["id"], "result": map[string]any{
 		"roots": []any{map[string]any{"uri": "https://example.com/x"}, map[string]any{"uri": uri, "name": "project"}}}})
 	s.send(string(reply))
@@ -546,15 +546,278 @@ func TestNoRootsCapabilityUsesCwd(t *testing.T) {
 	}
 }
 
+// fileURI builds the canonical file URI for an absolute local path:
+// file:///home/x on Unix and file:///C:/Users/x on Windows.
+func fileURI(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return (&url.URL{Scheme: "file", Path: slashed}).String()
+}
+
 func TestFileURIPath(t *testing.T) {
-	dir := t.TempDir()
-	good := (&url.URL{Scheme: "file", Path: filepath.ToSlash(dir)}).String()
+	dir := filepath.Join(t.TempDir(), "with space")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	good := fileURI(dir)
 	if path, ok := fileURIPath(good); !ok || path != dir {
 		t.Errorf("fileURIPath(%q) = %q %v", good, path, ok)
 	}
-	for _, bad := range []string{"https://example.com/x", "file://remote-host/x", "file:///definitely/missing/dir", "not a uri"} {
+	localhost := strings.Replace(good, "file://", "file://localhost", 1)
+	if path, ok := fileURIPath(localhost); !ok || path != dir {
+		t.Errorf("fileURIPath(%q) = %q %v", localhost, path, ok)
+	}
+	missing := fileURI(filepath.Join(dir, "missing"))
+	for _, bad := range []string{"https://example.com/x", missing, "not a uri", "file:relative"} {
 		if _, ok := fileURIPath(bad); ok {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+}
+
+func TestFileURIToPathPerOS(t *testing.T) {
+	for _, test := range []struct {
+		goos, uri, want string
+	}{
+		{"linux", "file:///home/u/src", "/home/u/src"},
+		{"linux", "file://localhost/home/u/src/", "/home/u/src"},
+		{"darwin", "file:///Users/u/My%20Project", "/Users/u/My Project"},
+		{"linux", "file:///a/../b", "/b"},
+		{"linux", "file://remote-host/x", ""},
+		{"linux", "file:relative", ""},
+		{"linux", "file:///x?q=1", ""},
+		{"linux", "https://example.com/x", ""},
+		{"windows", "file:///C:/Users/u/src", `C:\Users\u\src`},
+		{"windows", "file:///c%3A/Users/u/My%20Project", `c:\Users\u\My Project`},
+		{"windows", "file://localhost/D:/work/", `D:\work`},
+		{"windows", "file://C:/Users/u", `C:\Users\u`},
+		{"windows", "file:///C:", `C:\`},
+		{"windows", "file:///C:/../x", `C:\x`},
+		{"windows", "file://server/share/dir", `\\server\share\dir`},
+		{"windows", "file://server/", ""},
+		{"windows", "file:///home/u", ""},
+		{"windows", "file:///C:x", ""},
+		{"windows", "file:///C:/a%5Cb", ""},
+	} {
+		got, ok := fileURIToPath(test.uri, test.goos)
+		if ok != (test.want != "") || got != test.want {
+			t.Errorf("fileURIToPath(%q, %s) = %q %v, want %q", test.uri, test.goos, got, ok, test.want)
+		}
+	}
+}
+
+func TestRootsListChangedDuringExchange(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	ts := newTestServer(t, collectorTool("queue", "github_queue", "ok", 60))
+	s := startSession(t, ts.Server)
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"roots":{"listChanged":true}}}}`)
+	s.read()
+	s.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	request := s.read()
+	if request["method"] != "roots/list" {
+		t.Fatalf("expected roots/list, got %v", request)
+	}
+	// The roots change while the first request is unanswered, so its reply
+	// is stale and the server must ask again.
+	s.send(`{"jsonrpc":"2.0","method":"notifications/roots/list_changed"}`)
+	stale, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request["id"], "result": map[string]any{
+		"roots": []any{map[string]any{"uri": fileURI(first)}}}})
+	s.send(string(stale))
+	again := s.read()
+	if again["method"] != "roots/list" || again["id"] == request["id"] {
+		t.Fatalf("expected a second roots/list after the stale reply, got %v", again)
+	}
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"collector","arguments":{"name":"github_queue"}}}`)
+	current, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": again["id"], "result": map[string]any{
+		"roots": []any{map[string]any{"uri": fileURI(second)}}}})
+	s.send(string(current))
+	payload, _ := toolText(t, s.read())
+	if ws := payload["workspace"].(map[string]any); ws["source"] != "roots" || ws["root"] != second {
+		t.Errorf("workspace = %v, want %s", ws, second)
+	}
+}
+
+func TestChildTimeoutLeavesMargin(t *testing.T) {
+	for deadline, want := range map[time.Duration]string{
+		60 * time.Second: "51", 120 * time.Second: "110", 3600 * time.Second: "3590", 2 * time.Second: "1.5", 600 * time.Millisecond: "0.3",
+	} {
+		if got := childTimeout(deadline); got != want {
+			t.Errorf("childTimeout(%v) = %s, want %s", deadline, got, want)
+		}
+	}
+	tool := collectorTool("queue", "github_queue", "ok", 60)
+	tool.Collector.TimeoutFlag = "--timeout"
+	ts := newTestServer(t, tool)
+	ts.collectors[0].Timeout = 60 * time.Second
+	envelope := ts.runCollector(context.Background(), ts.collectors[0], false, true)
+	var result struct {
+		Args []string `json:"args"`
+	}
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Args[len(result.Args)-2:]; !reflect.DeepEqual(got, []string{"--timeout", "51"}) {
+		t.Errorf("collector args = %v", result.Args)
+	}
+}
+
+func TestRunStopsChildOnCancel(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	outcome := run(ctx, self, []string{"--mode=slow"}, append(os.Environ(), "AID_MCP_HELPER=1"), 30*time.Second, time.Now)
+	if elapsed := time.Since(start); elapsed > commandWaitDelay+3*time.Second {
+		t.Errorf("run returned after %v; the child kept running", elapsed)
+	}
+	if outcome.Error == nil || outcome.Error.Code != "cancelled" || outcome.cacheable() {
+		t.Errorf("outcome = %+v", outcome)
+	}
+}
+
+func TestCacheCancellationKeepsSharedRunForOtherWaiters(t *testing.T) {
+	c := newCache(time.Now)
+	started, release := make(chan struct{}), make(chan struct{})
+	var runCtx context.Context
+	execute := func(ctx context.Context) runOutcome {
+		runCtx = ctx
+		close(started)
+		select {
+		case <-release:
+			return runOutcome{At: time.Now(), Complete: true}
+		case <-ctx.Done():
+			return runOutcome{At: time.Now(), Error: &CollectorError{"cancelled", "stopped"}}
+		}
+	}
+	leaving, leave := context.WithCancel(context.Background())
+	firstDone := make(chan runOutcome, 1)
+	go func() {
+		outcome, _ := c.get(leaving, "k", time.Minute, false, execute)
+		firstDone <- outcome
+	}()
+	<-started
+	secondDone := make(chan runOutcome, 1)
+	go func() {
+		outcome, _ := c.get(context.Background(), "k", time.Minute, false, func(context.Context) runOutcome {
+			t.Error("second caller started its own run instead of joining")
+			return runOutcome{}
+		})
+		secondDone <- outcome
+	}()
+	waitFor(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.inFlight["k"] != nil && c.inFlight["k"].waiters == 2
+	})
+	leave()
+	if outcome := <-firstDone; outcome.Error == nil || outcome.Error.Code != "cancelled" {
+		t.Errorf("canceled waiter got %+v", outcome)
+	}
+	if runCtx.Err() != nil {
+		t.Fatal("shared run was canceled while another caller still waited")
+	}
+	close(release)
+	if outcome := <-secondDone; outcome.Error != nil || !outcome.Complete {
+		t.Errorf("remaining waiter got %+v", outcome)
+	}
+	c.wait()
+	if _, cached := c.get(context.Background(), "k", time.Minute, false, nil); !cached {
+		t.Error("completed shared run was not cached")
+	}
+}
+
+func TestCacheCancelsRunWhenLastWaiterLeaves(t *testing.T) {
+	c := newCache(time.Now)
+	started, stopped := make(chan struct{}), make(chan struct{})
+	execute := func(ctx context.Context) runOutcome {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return runOutcome{At: time.Now(), Error: &CollectorError{"cancelled", "stopped"}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.get(ctx, "k", time.Minute, false, execute)
+	}()
+	<-started
+	cancel()
+	<-done
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run was not canceled after its only waiter left")
+	}
+	c.wait()
+	c.mu.Lock()
+	_, cached := c.entries["k"]
+	c.mu.Unlock()
+	if cached {
+		t.Error("a canceled run was cached")
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCancelledRequestGetsNoResponseAndStopsChild(t *testing.T) {
+	ts := newTestServer(t, collectorTool("queue", "github_queue", "slow", 60))
+	s := startSession(t, ts.Server)
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`)
+	s.read()
+	s.send(`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"collector","arguments":{"name":"github_queue"}}}`)
+	waitFor(t, func() bool { return ts.runs() == 1 })
+	start := time.Now()
+	s.send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow","reason":"test"}}`)
+	s.send(`{"jsonrpc":"2.0","id":"p","method":"ping"}`)
+	if reply := s.read(); reply["id"] != "p" {
+		t.Fatalf("expected the ping reply first, got %v", reply)
+	}
+	// Serve waits for collector runs after stdin closes, so a prompt return
+	// shows the 10-second child was stopped.
+	s.close()
+	if elapsed := time.Since(start); elapsed > commandWaitDelay+3*time.Second {
+		t.Errorf("Serve returned after %v; the canceled child kept running", elapsed)
+	}
+	if s.out.Scan() {
+		t.Errorf("unexpected message after cancellation: %s", s.out.Text())
+	}
+}
+
+func TestServeReturnsWhenContextCanceled(t *testing.T) {
+	ts := newTestServer(t, collectorTool("queue", "github_queue", "slow", 60))
+	inReader, inWriter := io.Pipe()
+	defer inWriter.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ts.Serve(ctx, inReader, io.Discard) }()
+	io.WriteString(inWriter, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"collector","arguments":{"name":"github_queue"}}}`+"\n")
+	waitFor(t, func() bool { return ts.runs() == 1 })
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Serve returned %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > commandWaitDelay+3*time.Second {
+			t.Errorf("Serve returned after %v", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after its context was canceled while stdin stayed open")
 	}
 }

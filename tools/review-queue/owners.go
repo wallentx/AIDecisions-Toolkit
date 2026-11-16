@@ -3,6 +3,8 @@ package reviewqueue
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,31 +15,43 @@ import (
 
 const (
 	maxGitFileBytes  = 1 << 20
-	maxChildEntries  = 4096
 	maxAncestorSteps = 256
 )
 
+// maxChildEntries bounds the directory listing used for majority inference.
+// It is a variable so tests can lower it.
+var maxChildEntries = 4096
+
+// WarningChildrenTruncated reports that the workspace had more entries than
+// the listing bound, so no owner was inferred from its children.
+const WarningChildrenTruncated = "workspace_children_truncated"
+
 // inferScope applies the documented owner-inference order. It reads only local
-// git metadata files and never runs git or contacts the network.
-func inferScope(flagOwners, configOwners []string, workspace, host string) (owners []string, source string) {
+// git metadata files and never runs git or contacts the network. Warnings
+// explain an inference that was skipped.
+func inferScope(flagOwners, configOwners []string, workspace, host string) (owners []string, source string, warnings []string) {
 	if len(flagOwners) > 0 {
-		return uniqueOwners(flagOwners), ScopeFlag
+		return uniqueOwners(flagOwners), ScopeFlag, nil
 	}
 	if len(configOwners) > 0 {
-		return uniqueOwners(configOwners), ScopeConfig
+		return uniqueOwners(configOwners), ScopeConfig, nil
 	}
 	if workspace == "" {
-		return nil, ScopeAll
+		return nil, ScopeAll, nil
 	}
 	if gitDir, ok := findGitDir(workspace); ok {
 		if owner, ok := originOwner(gitDir, host); ok {
-			return []string{owner}, ScopeWorkspaceRepo
+			return []string{owner}, ScopeWorkspaceRepo, nil
 		}
 	}
-	if owner, ok := childMajority(workspace, host); ok {
-		return []string{owner}, ScopeWorkspaceChildren
+	owner, ok, truncated := childMajority(workspace, host)
+	if truncated {
+		return nil, ScopeAll, []string{WarningChildrenTruncated}
 	}
-	return nil, ScopeAll
+	if ok {
+		return []string{owner}, ScopeWorkspaceChildren, nil
+	}
+	return nil, ScopeAll, nil
 }
 
 func uniqueOwners(values []string) []string {
@@ -243,15 +257,25 @@ func ownerFromRemote(raw, host string) (string, bool) {
 
 // childMajority counts origin owners among git repositories one level below
 // dir and returns the owner holding a strict majority of the counted repos.
-func childMajority(dir, host string) (string, bool) {
+// A listing cut short by maxChildEntries or a read error reports truncated
+// and infers nothing, since a majority of a partial listing is not one of the
+// whole directory.
+func childMajority(dir, host string) (owner string, ok, truncated bool) {
 	file, err := os.Open(dir)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	entries, err := file.ReadDir(maxChildEntries)
+	switch {
+	case err == nil && len(entries) == maxChildEntries:
+		more, _ := file.ReadDir(1)
+		truncated = len(more) > 0
+	case err != nil && !errors.Is(err, io.EOF):
+		truncated = len(entries) > 0
+	}
 	file.Close()
-	if err != nil && len(entries) == 0 {
-		return "", false
+	if truncated || len(entries) == 0 {
+		return "", false, truncated
 	}
 	// Directory order varies by filesystem; sort so the reported spelling of
 	// an owner is deterministic.
@@ -290,10 +314,10 @@ func childMajority(dir, host string) (string, bool) {
 	sort.Strings(keys)
 	for _, key := range keys {
 		if counts[key]*2 > total {
-			return names[key], true
+			return names[key], true, false
 		}
 	}
-	return "", false
+	return "", false, false
 }
 
 // validOwner accepts GitHub user and organization names.

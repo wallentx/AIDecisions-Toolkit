@@ -42,6 +42,7 @@ the launcher already does, and runs the installed executable for each one.
     "description": "Open pull requests waiting on the user's review, new versus re-review.",
     "args": ["--json"],
     "workspace_flag": "--workspace",
+    "timeout_flag": "--timeout",
     "ttl_seconds": 60,
     "timeout_seconds": 60
   }
@@ -50,6 +51,14 @@ the launcher already does, and runs the installed executable for each one.
 
 - The server appends `workspace_flag <root>` when it knows the client's
   workspace root.
+- The server stops a run after `timeout_seconds`. When the manifest names a
+  `timeout_flag`, the server also passes that flag a shorter budget: the
+  deadline minus 15%, with the margin held between 0.5 and 10 seconds (51
+  seconds for a 60-second deadline). The child then stops its own requests
+  and prints a partial result with exit 3 before the server's deadline. An
+  explicit flag takes precedence over `timeout_seconds` in the AID config, so
+  MCP runs use the manifest's budget. `pr_delta` runs get `--timeout 110`
+  under a 120-second deadline in the same way.
 - Each run's stdout must be the tool's JSON result; the server never parses
   text output.
 - Exit codes keep their meaning: 0 complete, 3 incomplete. Exit 1 or 2, a
@@ -71,8 +80,12 @@ PR's delta when it needs detail.
 ## Workspace root
 
 The root passed to collectors comes from, in order: the MCP `roots/list`
-response when the client supports roots (first `file://` root), then the
-server process's working directory. Clients usually start stdio servers in the
+response when the client supports roots (first `file://` root that names an
+existing directory), then the server process's working directory. On Windows
+the server accepts `file:///C:/dir`, `file://localhost/C:/dir`, and UNC roots
+such as `file://server/share/dir`. A `notifications/roots/list_changed` that
+arrives while a `roots/list` request is unanswered makes the server ask again
+before it uses the reply. Clients usually start stdio servers in the
 project directory, so the second rule covers clients without roots support.
 The envelope records which source was used.
 
@@ -80,7 +93,17 @@ The envelope records which source was used.
 
 Results are cached in memory per collector and per workspace root for
 `ttl_seconds`. `refresh: true` bypasses the cache. Two concurrent requests for
-the same collector share one run. Nothing is written to disk, and nothing runs
+the same collector share one run.
+
+## Cancellation
+
+`notifications/cancelled` cancels the named request, and the server sends no
+response for it. A `pr_delta` run, or a collector run that no other request
+shares, is stopped: the child receives an interrupt (a kill on Windows) and is
+killed if it is still running 2 seconds later. A shared collector run keeps
+going while another request still waits on it. Canceling the server, for
+example with Ctrl-C, cancels every request and returns even while stdin stays
+open. Nothing is written to disk, and nothing runs
 between requests: the server is pull-based, like a scrape.
 
 ## Safety
@@ -107,6 +130,10 @@ lives in the client, outside this repository.
 - Cache TTL, `refresh`, and request coalescing, with a fake clock and a fake
   executable.
 - Error envelopes for exit codes 1, 2 and 3, a timeout, and invalid JSON.
+- Cancellation of a request, of one waiter on a shared run, and of the server
+  while stdin stays open.
+- `roots/list_changed` during a `roots/list` exchange, and file URI parsing
+  for Linux, macOS, and Windows forms.
 - Argument validation that rejects shell metacharacters and malformed values.
 
 ## Usage
@@ -130,7 +157,8 @@ The server accepts protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and
 `tools/call` result carries the envelope as JSON text. A collector failure or
 an invalid argument sets `isError: true` with an `error` object whose `code` is
 one of `failed` (exit 1), `usage` (exit 2), `timeout`, `invalid_json`,
-`output_limit`, `exec_failed`, or `invalid_arguments`. An unknown MCP tool name
+`output_limit`, `exec_failed`, `cancelled` (the server shut down during the
+run), or `invalid_arguments`. An unknown MCP tool name
 is a JSON-RPC error.
 
 Every envelope also carries `command` and, for collectors that take a

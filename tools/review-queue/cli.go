@@ -179,9 +179,9 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if err != nil {
 		return cliError(stderr, 2, "--workspace must be an existing directory")
 	}
-	scopeOwners, scopeSource := inferScope(owners, configured.Owners, root, *host)
+	scopeOwners, scopeSource, scopeWarnings := inferScope(owners, configured.Owners, root, *host)
 	opts := Options{Reviewer: *reviewer, Owners: scopeOwners, ScopeSource: scopeSource, Workspace: root, Host: *host,
-		MaxPRs: *maxPRs, NoDelta: *noDelta, DeltaConcurrency: *concurrency, TitleLimit: *titleLimit}
+		MaxPRs: *maxPRs, NoDelta: *noDelta, DeltaConcurrency: *concurrency, TitleLimit: *titleLimit, ScopeWarnings: scopeWarnings}
 	if *dryRun {
 		reviewerPlan := *reviewer
 		if reviewerPlan == "" {
@@ -196,12 +196,13 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 			ReadOnly      bool             `json:"read_only"`
 			Timeout       float64          `json:"timeout_seconds"`
 			Limits        map[string]int64 `json:"limits"`
+			Warnings      []string         `json:"warnings,omitempty"`
 		}{SchemaVersion, "dry-run", reviewerPlan,
 			Scope{Owners: append([]string{}, scopeOwners...), Source: scopeSource, Workspace: root, Query: BuildQuery(orLogin(*reviewer), scopeOwners)},
 			!*noDelta, true, *timeout, map[string]int64{
 				"max_prs": int64(*maxPRs), "delta_concurrency": int64(*concurrency), "title_limit": int64(*titleLimit),
 				"max_response_bytes": *maxResponse, "max_output_bytes": int64(*maxOutput),
-			}}
+			}, scopeWarnings}
 		if err := json.NewEncoder(stdout).Encode(preview); err != nil {
 			return cliError(stderr, 1, "cannot write collection preview")
 		}

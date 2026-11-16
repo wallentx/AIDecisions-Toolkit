@@ -77,11 +77,11 @@ func TestOriginURLParsesConfigSyntax(t *testing.T) {
 func TestInferScopeFlagAndConfigWin(t *testing.T) {
 	workspace := t.TempDir()
 	makeRepo(t, workspace, "git@github.com:repo-owner/x.git")
-	owners, source := inferScope([]string{"acme", "ACME", "other"}, []string{"configured"}, workspace, "github.com")
+	owners, source, _ := inferScope([]string{"acme", "ACME", "other"}, []string{"configured"}, workspace, "github.com")
 	if source != ScopeFlag || !reflect.DeepEqual(owners, []string{"acme", "other"}) {
 		t.Errorf("flag rule = %v %s", owners, source)
 	}
-	owners, source = inferScope(nil, []string{"configured"}, workspace, "github.com")
+	owners, source, _ = inferScope(nil, []string{"configured"}, workspace, "github.com")
 	if source != ScopeConfig || !reflect.DeepEqual(owners, []string{"configured"}) {
 		t.Errorf("config rule = %v %s", owners, source)
 	}
@@ -94,7 +94,7 @@ func TestInferScopeWorkspaceRepoFromSubdirectory(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	owners, source := inferScope(nil, nil, nested, "github.com")
+	owners, source, _ := inferScope(nil, nil, nested, "github.com")
 	if source != ScopeWorkspaceRepo || !reflect.DeepEqual(owners, []string{"acme"}) {
 		t.Errorf("workspace repo = %v %s", owners, source)
 	}
@@ -109,14 +109,14 @@ func TestInferScopeWorktreeGitdirFile(t *testing.T) {
 	write(t, filepath.Join(linked, "commondir"), "../..\n")
 	worktree := filepath.Join(base, "wt", "feature")
 	write(t, filepath.Join(worktree, ".git"), "gitdir: "+linked+"\n")
-	owners, source := inferScope(nil, nil, worktree, "github.com")
+	owners, source, _ := inferScope(nil, nil, worktree, "github.com")
 	if source != ScopeWorkspaceRepo || !reflect.DeepEqual(owners, []string{"acme"}) {
 		t.Errorf("worktree = %v %s", owners, source)
 	}
 
 	relative := filepath.Join(base, "sub")
 	write(t, filepath.Join(relative, ".git"), "gitdir: ../main/.git\n")
-	if owners, source := inferScope(nil, nil, relative, "github.com"); source != ScopeWorkspaceRepo || owners[0] != "acme" {
+	if owners, source, _ := inferScope(nil, nil, relative, "github.com"); source != ScopeWorkspaceRepo || owners[0] != "acme" {
 		t.Errorf("relative gitdir = %v %s", owners, source)
 	}
 }
@@ -134,7 +134,7 @@ func TestInferScopeWorkspaceChildrenMajority(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(workspace, ".git", "info"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	owners, source := inferScope(nil, nil, workspace, "github.com")
+	owners, source, _ := inferScope(nil, nil, workspace, "github.com")
 	if source != ScopeWorkspaceChildren || !reflect.DeepEqual(owners, []string{"FarmGPU"}) {
 		t.Errorf("children = %v %s", owners, source)
 	}
@@ -151,7 +151,7 @@ func TestInferScopeNoMajorityIsAll(t *testing.T) {
 		for index, url := range urls {
 			makeRepo(t, filepath.Join(workspace, string(rune('a'+index))), url)
 		}
-		if owners, source := inferScope(nil, nil, workspace, "github.com"); source != ScopeAll || owners != nil {
+		if owners, source, _ := inferScope(nil, nil, workspace, "github.com"); source != ScopeAll || owners != nil {
 			t.Errorf("%s: = %v %s", name, owners, source)
 		}
 	}
@@ -161,7 +161,24 @@ func TestInferScopeForeignWorkspaceRepoFallsThroughToChildren(t *testing.T) {
 	workspace := t.TempDir()
 	makeRepo(t, workspace, "git@gitlab.com:mono/repo.git")
 	makeRepo(t, filepath.Join(workspace, "child"), "git@github.com:acme/child.git")
-	if owners, source := inferScope(nil, nil, workspace, "github.com"); source != ScopeWorkspaceChildren || owners[0] != "acme" {
+	if owners, source, _ := inferScope(nil, nil, workspace, "github.com"); source != ScopeWorkspaceChildren || owners[0] != "acme" {
 		t.Errorf("= %v %s", owners, source)
+	}
+}
+
+func TestInferScopeSkipsChildrenWhenListingIsTruncated(t *testing.T) {
+	defer func(limit int) { maxChildEntries = limit }(maxChildEntries)
+	maxChildEntries = 3
+	workspace := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		makeRepo(t, filepath.Join(workspace, name), "git@github.com:acme/"+name+".git")
+	}
+	if owners, source, warnings := inferScope(nil, nil, workspace, "github.com"); source != ScopeWorkspaceChildren || owners[0] != "acme" || warnings != nil {
+		t.Fatalf("at the bound = %v %s %v", owners, source, warnings)
+	}
+	makeRepo(t, filepath.Join(workspace, "d"), "git@github.com:other/d.git")
+	owners, source, warnings := inferScope(nil, nil, workspace, "github.com")
+	if source != ScopeAll || owners != nil || !reflect.DeepEqual(warnings, []string{WarningChildrenTruncated}) {
+		t.Errorf("over the bound = %v %s %v", owners, source, warnings)
 	}
 }

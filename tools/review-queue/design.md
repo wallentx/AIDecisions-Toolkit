@@ -62,8 +62,8 @@ git config files; it runs no network call.
      "requested_via": "user", "updated_at": "...",
      "kind": "re_review",
      "delta": {"head_relation": "rebased", "verdict": "unchanged", "changed_files": 0,
-               "threads_unresolved": 0, "threads_unresolved_with_reply": 0,
-               "ci": {"success": 8, "failure": 0, "pending": 0}, "complete": true}}
+               "threads_unresolved": 0, "threads_unresolved_with_author_reply": 0,
+               "ci": {"success": 8, "failure": 0, "pending": 0, "skipped": 0, "neutral": 0, "cancelled": 0, "other": 0}, "complete": true}}
   ],
   "sources": {"search": {"status": "ok"}, "delta": {"status": "ok", "skipped": 0}},
   "complete": true,

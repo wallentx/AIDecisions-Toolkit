@@ -9,6 +9,7 @@
     "description": "Open pull requests waiting on the user's review, new versus re-review.",
     "args": ["--json"],
     "workspace_flag": "--workspace",
+    "timeout_flag": "--timeout",
     "ttl_seconds": 60,
     "timeout_seconds": 60
   }

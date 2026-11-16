@@ -13,9 +13,11 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,14 +73,18 @@ type Server struct {
 	out     io.Writer
 
 	stateMu     sync.Mutex
+	serveCtx    context.Context
 	version     string
 	clientRoots bool
 	rootsValid  bool
 	root        string
 	rootsWait   chan struct{}
-	nextID      int
-	pending     map[string]chan message
-	inFlight    map[string]context.CancelFunc
+	// rootsGen counts root invalidations. An exchange whose generation is
+	// stale when its reply arrives asks again instead of storing the reply.
+	rootsGen int
+	nextID   int
+	pending  map[string]chan message
+	inFlight map[string]context.CancelFunc
 }
 
 // New prepares a server from catalog tools.
@@ -165,30 +171,59 @@ var nullID = json.RawMessage("null")
 
 // Serve reads messages from in until EOF or ctx ends. Requests run
 // concurrently so a slow collector never blocks ping or roots/list responses.
+// After EOF, requests already received are still answered. When ctx ends,
+// in-flight requests are canceled and Serve returns without waiting for in
+// to produce more data; the goroutine blocked reading in exits once in
+// returns, typically when the process exits.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.out = out
+	defer s.cache.wait()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	s.stateMu.Lock()
+	s.serveCtx = ctx
+	s.stateMu.Unlock()
 	var handlers sync.WaitGroup
 	defer handlers.Wait()
-	reader := bufio.NewReaderSize(in, 64<<10)
+	type readResult struct {
+		line    []byte
+		tooLong bool
+		err     error
+	}
+	lines := make(chan readResult)
+	go func() {
+		reader := bufio.NewReaderSize(in, 64<<10)
+		for {
+			line, tooLong, err := readLine(reader)
+			select {
+			case lines <- readResult{line, tooLong, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	for {
-		line, tooLong, err := readLine(reader)
-		if len(bytes.TrimSpace(line)) > 0 || tooLong {
-			if tooLong {
+		var next readResult
+		select {
+		case next = <-lines:
+		case <-ctx.Done():
+			return nil
+		}
+		if len(bytes.TrimSpace(next.line)) > 0 || next.tooLong {
+			if next.tooLong {
 				s.send(response{JSONRPC: "2.0", ID: nullID, Error: &rpcError{codeParseError, "message exceeds the size limit"}})
 			} else {
-				s.dispatch(ctx, line, &handlers)
+				s.dispatch(ctx, next.line, &handlers)
 			}
 		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		if next.err != nil {
+			if errors.Is(next.err, io.EOF) {
 				return nil
 			}
-			return err
-		}
-		if ctx.Err() != nil {
-			return nil
+			return next.err
 		}
 	}
 }
@@ -310,6 +345,7 @@ func (s *Server) initialize(msg message) response {
 	_, roots := params.Capabilities["roots"]
 	s.stateMu.Lock()
 	s.version, s.clientRoots, s.rootsValid = version, roots, false
+	s.rootsGen++
 	s.stateMu.Unlock()
 	return response{JSONRPC: "2.0", ID: msg.ID, Result: map[string]any{
 		"protocolVersion": version,
@@ -332,6 +368,7 @@ func (s *Server) notification(msg message) {
 	case "notifications/roots/list_changed":
 		s.stateMu.Lock()
 		s.rootsValid = false
+		s.rootsGen++
 		s.stateMu.Unlock()
 		s.startRoots()
 	case "notifications/cancelled":
@@ -385,31 +422,51 @@ func (s *Server) deliver(msg message) {
 }
 
 // startRoots begins one roots/list exchange unless one is already running.
+// A running exchange notices a newer rootsGen when its reply arrives and asks
+// again, so a list_changed notification during an exchange is not lost.
 func (s *Server) startRoots() {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	if s.rootsWait != nil || !s.clientRoots {
 		return
 	}
-	s.nextID++
-	id := "aid-roots-" + strconv.Itoa(s.nextID)
-	waiter := make(chan message, 1)
-	s.pending[id] = waiter
 	done := make(chan struct{})
 	s.rootsWait = done
+	ctx := s.serveCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	go func() {
-		s.send(outgoingRequest{JSONRPC: "2.0", ID: id, Method: "roots/list"})
-		root := ""
-		select {
-		case reply := <-waiter:
-			root = firstFileRoot(reply)
-		case <-time.After(2 * rootsWaitTimeout):
+		defer close(done)
+		for {
+			s.stateMu.Lock()
+			s.nextID++
+			id := "aid-roots-" + strconv.Itoa(s.nextID)
+			generation := s.rootsGen
+			waiter := make(chan message, 1)
+			s.pending[id] = waiter
+			s.stateMu.Unlock()
+
+			s.send(outgoingRequest{JSONRPC: "2.0", ID: id, Method: "roots/list"})
+			root, stopped := "", false
+			select {
+			case reply := <-waiter:
+				root = firstFileRoot(reply)
+			case <-time.After(2 * rootsWaitTimeout):
+			case <-ctx.Done():
+				stopped = true
+			}
+
+			s.stateMu.Lock()
+			delete(s.pending, id)
+			if !stopped && generation != s.rootsGen && s.clientRoots {
+				s.stateMu.Unlock()
+				continue
+			}
+			s.root, s.rootsValid, s.rootsWait = root, !stopped, nil
+			s.stateMu.Unlock()
+			return
 		}
-		s.stateMu.Lock()
-		delete(s.pending, id)
-		s.root, s.rootsValid, s.rootsWait = root, true, nil
-		s.stateMu.Unlock()
-		close(done)
 	}()
 }
 
@@ -433,20 +490,63 @@ func firstFileRoot(reply message) string {
 	return ""
 }
 
+// fileURIPath converts a file URI to an existing local directory.
 func fileURIPath(raw string) (string, bool) {
+	converted, ok := fileURIToPath(raw, runtime.GOOS)
+	if !ok {
+		return "", false
+	}
+	dir := filepath.Clean(converted)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", false
+	}
+	return dir, true
+}
+
+// fileURIToPath converts a file URI to an absolute path in goos's syntax
+// without touching the filesystem. Percent-escapes are decoded and a
+// localhost host is ignored. On Windows the canonical file:///C:/dir form
+// becomes C:\dir, the nonstandard file://C:/dir form is accepted, and
+// file://server/share/dir becomes the UNC path \\server\share\dir. Other
+// systems accept only local paths.
+func fileURIToPath(raw, goos string) (string, bool) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "file" || (parsed.Host != "" && parsed.Host != "localhost") || parsed.Path == "" {
+	if err != nil || !strings.EqualFold(parsed.Scheme, "file") || parsed.Opaque != "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", false
 	}
-	path := parsed.Path
-	if runtime.GOOS == "windows" && len(path) > 2 && path[0] == '/' && path[2] == ':' {
-		path = path[1:]
+	host, uriPath := parsed.Host, parsed.Path
+	if strings.EqualFold(host, "localhost") {
+		host = ""
 	}
-	path = filepath.Clean(filepath.FromSlash(path))
-	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+	if goos != "windows" {
+		if host != "" || !strings.HasPrefix(uriPath, "/") {
+			return "", false
+		}
+		return path.Clean(uriPath), true
+	}
+	if strings.ContainsRune(uriPath, '\\') {
 		return "", false
 	}
-	return path, true
+	windows := func(slashed string) string { return strings.ReplaceAll(slashed, "/", `\`) }
+	if isDrive(host) {
+		host, uriPath = "", "/"+host+uriPath
+	}
+	if host != "" {
+		rest := path.Clean("/" + uriPath)
+		if rest == "/" {
+			return "", false // A UNC path needs a share name.
+		}
+		return `\\` + host + windows(rest), true
+	}
+	if len(uriPath) < 3 || uriPath[0] != '/' || !isDrive(uriPath[1:3]) || (len(uriPath) > 3 && uriPath[3] != '/') {
+		return "", false
+	}
+	return uriPath[1:3] + windows(path.Clean("/"+uriPath[3:])), true
+}
+
+func isDrive(value string) bool {
+	return len(value) == 2 && value[1] == ':' && ('a' <= value[0]|0x20 && value[0]|0x20 <= 'z')
 }
 
 type workspace struct {

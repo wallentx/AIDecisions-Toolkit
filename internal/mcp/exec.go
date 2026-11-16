@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -40,14 +41,23 @@ type runOutcome struct {
 func (outcome runOutcome) cacheable() bool { return outcome.Error == nil }
 
 // run executes path with argv only (no shell) under timeout and classifies
-// the result by exit code and JSON validity.
-func run(path string, args, env []string, timeout time.Duration, now func() time.Time) runOutcome {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+// the result by exit code and JSON validity. Canceling parent stops the child:
+// it first receives an interrupt, so AID tools can stop their own gh
+// subprocesses, and is killed if it is still running after commandWaitDelay.
+func run(parent context.Context, path string, args, env []string, timeout time.Duration, now func() time.Time) runOutcome {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	stdout := bounded.NewBuffer(maxCollectorOutput, "collector output")
 	stderr := bounded.NewBuffer(maxCollectorStderr, "collector stderr")
 	command := exec.CommandContext(ctx, path, args...)
 	command.Stdout, command.Stderr, command.Env, command.WaitDelay = stdout, stderr, env, commandWaitDelay
+	command.Cancel = func() error {
+		// Windows cannot deliver os.Interrupt to another process.
+		if command.Process.Signal(os.Interrupt) != nil {
+			return command.Process.Kill()
+		}
+		return nil
+	}
 	err := command.Run()
 	outcome := runOutcome{At: now().UTC()}
 	if command.ProcessState != nil {
@@ -57,6 +67,9 @@ func run(path string, args, env []string, timeout time.Duration, now func() time
 		}
 	}
 	switch {
+	case parent.Err() != nil:
+		outcome.Error = &CollectorError{"cancelled", "request was cancelled before the collector finished"}
+		return outcome
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		outcome.Error = &CollectorError{"timeout", "collector did not finish within its timeout"}
 		return outcome

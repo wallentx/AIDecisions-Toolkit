@@ -48,20 +48,22 @@ func TestCollectorBlockIsOptionalAndValidated(t *testing.T) {
 		t.Fatalf("plain manifest = %+v, %v", plain, err)
 	}
 	valid := `{"id":"queue","command":"AID.queue","version":"0.1.0","description":"d","package":"./cmd/AID.queue",
-	  "collector":{"name":"github_queue","description":"q","args":["--json","--no-delta"],"workspace_flag":"--workspace","ttl_seconds":60,"timeout_seconds":60}}`
+	  "collector":{"name":"github_queue","description":"q","args":["--json","--no-delta"],"workspace_flag":"--workspace","timeout_flag":"--timeout","ttl_seconds":60,"timeout_seconds":60}}`
 	tool, err := parse([]byte(valid), []byte("skill"))
-	if err != nil || tool.Collector == nil || tool.Collector.Name != "github_queue" || tool.Collector.TTLSeconds != 60 {
+	if err != nil || tool.Collector == nil || tool.Collector.Name != "github_queue" || tool.Collector.TTLSeconds != 60 || tool.Collector.TimeoutFlag != "--timeout" {
 		t.Fatalf("collector manifest = %+v, %v", tool.Collector, err)
 	}
 	for name, collector := range map[string]string{
-		"bad name":       `{"name":"Bad-Name","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
-		"no description": `{"name":"q","description":"","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
-		"no json":        `{"name":"q","description":"q","args":["--text"],"ttl_seconds":1,"timeout_seconds":1}`,
-		"shell arg":      `{"name":"q","description":"q","args":["--json","--x=$(id)"],"ttl_seconds":1,"timeout_seconds":1}`,
-		"positional":     `{"name":"q","description":"q","args":["--json","value"],"ttl_seconds":1,"timeout_seconds":1}`,
-		"bad flag":       `{"name":"q","description":"q","args":["--json"],"workspace_flag":"-w x","ttl_seconds":1,"timeout_seconds":1}`,
-		"zero timeout":   `{"name":"q","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":0}`,
-		"negative ttl":   `{"name":"q","description":"q","args":["--json"],"ttl_seconds":-1,"timeout_seconds":1}`,
+		"bad name":         `{"name":"Bad-Name","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"no description":   `{"name":"q","description":"","args":["--json"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"no json":          `{"name":"q","description":"q","args":["--text"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"shell arg":        `{"name":"q","description":"q","args":["--json","--x=$(id)"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"positional":       `{"name":"q","description":"q","args":["--json","value"],"ttl_seconds":1,"timeout_seconds":1}`,
+		"bad flag":         `{"name":"q","description":"q","args":["--json"],"workspace_flag":"-w x","ttl_seconds":1,"timeout_seconds":1}`,
+		"bad timeout flag": `{"name":"q","description":"q","args":["--json"],"timeout_flag":"--timeout=1","ttl_seconds":1,"timeout_seconds":1}`,
+		"same flags":       `{"name":"q","description":"q","args":["--json"],"workspace_flag":"--x","timeout_flag":"--x","ttl_seconds":1,"timeout_seconds":1}`,
+		"zero timeout":     `{"name":"q","description":"q","args":["--json"],"ttl_seconds":1,"timeout_seconds":0}`,
+		"negative ttl":     `{"name":"q","description":"q","args":["--json"],"ttl_seconds":-1,"timeout_seconds":1}`,
 	} {
 		data := `{"id":"queue","command":"AID.queue","version":"0.1.0","description":"d","package":"./cmd/AID.queue","collector":` + collector + `}`
 		if _, err := parse([]byte(data), []byte("skill")); err == nil {

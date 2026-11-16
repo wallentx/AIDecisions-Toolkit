@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type fakeAPI struct {
 	searchErr  error
 	searchVars []map[string]any
 	deltaOK    map[string]bool
+	checkRuns  []any
 	rest       []string
 }
 
@@ -44,9 +46,13 @@ func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
 	}
 	switch {
 	case strings.HasSuffix(endpoint, "/check-runs?filter=latest&per_page=100&page=1"):
-		return copyJSON(out, obj{"total_count": 2, "check_runs": []any{
-			obj{"name": "test", "status": "completed", "conclusion": "success"},
-			obj{"name": "lint", "status": "completed", "conclusion": "success"}}})
+		runs := fake.checkRuns
+		if runs == nil {
+			runs = []any{
+				obj{"name": "test", "status": "completed", "conclusion": "success"},
+				obj{"name": "lint", "status": "completed", "conclusion": "success"}}
+		}
+		return copyJSON(out, obj{"total_count": len(runs), "check_runs": runs})
 	case strings.HasSuffix(endpoint, "/status?per_page=100&page=1"):
 		return copyJSON(out, obj{"total_count": 0, "statuses": []any{}})
 	case strings.Contains(endpoint, "/compare/"+baseTip+"..."):
@@ -286,7 +292,10 @@ func TestSearchPaginatesUntilBound(t *testing.T) {
 		first = append(first, pullNode("acme/a", number, 0, userRequest("octo")))
 	}
 	fake := &fakeAPI{t: t, pages: []any{page(101, true, first...), page(101, false, pullNode("acme/a", 101, 0, userRequest("octo")))}}
-	result := Collect(context.Background(), fake, Options{Reviewer: "octo", MaxPRs: 150, NoDelta: true})
+	result := Collect(context.Background(), fake, Options{Reviewer: "octo", MaxPRs: 150, NoDelta: true, ScopeWarnings: []string{WarningChildrenTruncated}})
+	if !reflect.DeepEqual(result.Warnings, []string{WarningChildrenTruncated, "scope_all_repositories"}) {
+		t.Errorf("warnings = %v", result.Warnings)
+	}
 	if !result.Complete || len(result.Items) != 101 || len(fake.searchVars) != 2 || fake.searchVars[1]["cursor"] != "cursor" {
 		t.Errorf("complete %v items %d searches %d", result.Complete, len(result.Items), len(fake.searchVars))
 	}
@@ -366,6 +375,31 @@ func TestTextOutputOneLinePerPR(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("text missing %q:\n%s", want, &out)
 		}
+	}
+}
+
+func TestDeltaKeepsNonSuccessCICategories(t *testing.T) {
+	fake := &fakeAPI{t: t, deltaOK: map[string]bool{"acme/widget#7": true}, checkRuns: []any{
+		obj{"name": "test", "status": "completed", "conclusion": "success"},
+		obj{"name": "lint", "status": "completed", "conclusion": "success"},
+		obj{"name": "e2e", "status": "completed", "conclusion": "timed_out"},
+		obj{"name": "deploy", "status": "completed", "conclusion": "cancelled"},
+		obj{"name": "docs", "status": "completed", "conclusion": "skipped"},
+	}, pages: []any{page(1, false, pullNode("acme/widget", 7, 1, userRequest("octo")))}}
+	result := Collect(context.Background(), fake, Options{Reviewer: "octo", Owners: []string{"acme"}, ScopeSource: ScopeFlag})
+	delta := result.Items[0].Delta
+	if delta == nil || delta.CI != (DeltaCI{Success: 2, Skipped: 1, Cancelled: 1, Other: 1}) {
+		t.Fatalf("delta CI = %+v", delta)
+	}
+	var out bytes.Buffer
+	if err := writeText(&out, result); err != nil {
+		t.Fatal(err)
+	}
+	if want := "CI 2/4, 1 cancelled, 1 other"; !strings.Contains(out.String(), want) {
+		t.Errorf("text missing %q:\n%s", want, &out)
+	}
+	if line := ciText(DeltaCI{Success: 8, Failure: 1}); !reflect.DeepEqual(line, []string{"CI 8/9", "1 failing"}) {
+		t.Errorf("ciText = %v", line)
 	}
 }
 

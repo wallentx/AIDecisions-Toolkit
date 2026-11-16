@@ -108,14 +108,10 @@ func itemText(item Item) string {
 			detail = append(detail, fmt.Sprintf("%d files changed", delta.ChangedFiles))
 		}
 		threads := fmt.Sprintf("%d open threads", delta.ThreadsUnresolved)
-		if delta.ThreadsUnresolvedWithReply > 0 {
-			threads += fmt.Sprintf(" (%d with reply)", delta.ThreadsUnresolvedWithReply)
+		if delta.ThreadsUnresolvedWithAuthorReply > 0 {
+			threads += fmt.Sprintf(" (%d with author reply)", delta.ThreadsUnresolvedWithAuthorReply)
 		}
-		ci := delta.CI
-		detail = append(detail, threads, fmt.Sprintf("CI %d/%d", ci.Success, ci.Success+ci.Failure+ci.Pending))
-		if ci.Failure > 0 {
-			detail = append(detail, fmt.Sprintf("%d failing", ci.Failure))
-		}
+		detail = append(append(detail, threads), ciText(delta.CI)...)
 		if !delta.Complete {
 			detail = append(detail, "delta incomplete")
 		}
@@ -123,6 +119,22 @@ func itemText(item Item) string {
 		detail = append(detail, "by "+orDash(item.Author)+": "+item.Title)
 	}
 	return head + " " + strings.Join(detail, ", ")
+}
+
+// ciText reports passing checks over checks that can block a merge. Skipped
+// and neutral conclusions do not block, so they stay out of the denominator;
+// every other non-success category is named.
+func ciText(ci DeltaCI) []string {
+	parts := []string{fmt.Sprintf("CI %d/%d", ci.Success, ci.Success+ci.Failure+ci.Pending+ci.Cancelled+ci.Other)}
+	for _, note := range []struct {
+		count int
+		label string
+	}{{ci.Failure, "failing"}, {ci.Cancelled, "cancelled"}, {ci.Other, "other"}} {
+		if note.count > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", note.count, note.label))
+		}
+	}
+	return parts
 }
 
 func verdictText(verdict string) string {

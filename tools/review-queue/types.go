@@ -87,23 +87,29 @@ type Item struct {
 
 // Delta is the compact pr-delta comparison for a re-review.
 type Delta struct {
-	BaselineState              string   `json:"baseline_state,omitempty"`
-	BaselineCommit             string   `json:"baseline_commit,omitempty"`
-	HeadRelation               string   `json:"head_relation"`
-	Verdict                    string   `json:"verdict"`
-	ChangedFiles               int      `json:"changed_files"`
-	ThreadsUnresolved          int      `json:"threads_unresolved"`
-	ThreadsUnresolvedWithReply int      `json:"threads_unresolved_with_reply"`
-	CI                         DeltaCI  `json:"ci"`
-	Complete                   bool     `json:"complete"`
-	Warnings                   []string `json:"warnings,omitempty"`
-	IncompleteSources          []string `json:"incomplete_sources,omitempty"`
+	BaselineState                    string   `json:"baseline_state,omitempty"`
+	BaselineCommit                   string   `json:"baseline_commit,omitempty"`
+	HeadRelation                     string   `json:"head_relation"`
+	Verdict                          string   `json:"verdict"`
+	ChangedFiles                     int      `json:"changed_files"`
+	ThreadsUnresolved                int      `json:"threads_unresolved"`
+	ThreadsUnresolvedWithAuthorReply int      `json:"threads_unresolved_with_author_reply"`
+	CI                               DeltaCI  `json:"ci"`
+	Complete                         bool     `json:"complete"`
+	Warnings                         []string `json:"warnings,omitempty"`
+	IncompleteSources                []string `json:"incomplete_sources,omitempty"`
 }
 
+// DeltaCI mirrors pr-delta's CI counts at the current head. Other holds
+// conclusions such as timed_out, action_required, and stale.
 type DeltaCI struct {
-	Success int `json:"success"`
-	Failure int `json:"failure"`
-	Pending int `json:"pending"`
+	Success   int `json:"success"`
+	Failure   int `json:"failure"`
+	Pending   int `json:"pending"`
+	Skipped   int `json:"skipped"`
+	Neutral   int `json:"neutral"`
+	Cancelled int `json:"cancelled"`
+	Other     int `json:"other"`
 }
 
 // Sources reports each evidence source. Reviewer appears only when the

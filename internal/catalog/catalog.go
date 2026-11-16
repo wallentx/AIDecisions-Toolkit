@@ -27,12 +27,14 @@ type Tool struct {
 
 // Collector declares a cheap, read-only run that the AID MCP server may
 // execute on request. Args are fixed; the server appends only
-// WorkspaceFlag and the client's workspace root.
+// WorkspaceFlag with the client's workspace root, and TimeoutFlag with a
+// collection budget shorter than TimeoutSeconds.
 type Collector struct {
 	Name           string   `json:"name"`
 	Description    string   `json:"description"`
 	Args           []string `json:"args"`
 	WorkspaceFlag  string   `json:"workspace_flag,omitempty"`
+	TimeoutFlag    string   `json:"timeout_flag,omitempty"`
 	TTLSeconds     int      `json:"ttl_seconds"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
 }
@@ -63,6 +65,9 @@ func validateCollector(collector *Collector) error {
 	}
 	if collector.WorkspaceFlag != "" && !collectorFlagPattern.MatchString(collector.WorkspaceFlag) {
 		return fmt.Errorf("collector %s has an invalid workspace_flag", collector.Name)
+	}
+	if collector.TimeoutFlag != "" && (!collectorFlagPattern.MatchString(collector.TimeoutFlag) || collector.TimeoutFlag == collector.WorkspaceFlag) {
+		return fmt.Errorf("collector %s has an invalid timeout_flag", collector.Name)
 	}
 	if collector.TTLSeconds < 0 || collector.TTLSeconds > 86400 || collector.TimeoutSeconds < 1 || collector.TimeoutSeconds > 3600 {
 		return fmt.Errorf("collector %s needs ttl_seconds 0-86400 and timeout_seconds 1-3600", collector.Name)

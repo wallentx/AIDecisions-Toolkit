@@ -25,6 +25,8 @@ type Options struct {
 	NoDelta          bool
 	DeltaConcurrency int
 	TitleLimit       int
+	// ScopeWarnings come from owner inference and are copied into the result.
+	ScopeWarnings []string
 }
 
 func DefaultOptions() Options {
@@ -130,7 +132,7 @@ func Collect(ctx context.Context, api API, opts Options) Result {
 		AsOf:           time.Now().UTC(),
 		Items:          []Item{},
 		Sources:        Sources{Search: SourceStatus{Status: StatusSkipped}, Delta: DeltaSource{Status: StatusSkipped}},
-		Warnings:       []string{},
+		Warnings:       append([]string{}, opts.ScopeWarnings...),
 	}
 	if opts.ScopeSource == ScopeAll {
 		result.Warnings = append(result.Warnings, "scope_all_repositories")
@@ -362,8 +364,8 @@ func itemDelta(ctx context.Context, api API, host, reviewer string, item Item) *
 	}
 	result := prdelta.Collect(ctx, api, ref, prdelta.Options{Reviewer: reviewer})
 	delta := &Delta{HeadRelation: result.HeadRelation, Verdict: prdelta.VerdictUnknown, Complete: result.Complete,
-		ThreadsUnresolved: result.Threads.Unresolved, ThreadsUnresolvedWithReply: result.Threads.UnresolvedWithAuthorReply,
-		CI:       DeltaCI{Success: result.CI.Counts.Success, Failure: result.CI.Counts.Failure, Pending: result.CI.Counts.Pending},
+		ThreadsUnresolved: result.Threads.Unresolved, ThreadsUnresolvedWithAuthorReply: result.Threads.UnresolvedWithAuthorReply,
+		CI:       compactCI(result.CI.Counts),
 		Warnings: result.Warnings}
 	if len(delta.Warnings) == 0 {
 		delta.Warnings = nil
@@ -389,6 +391,11 @@ func itemDelta(ctx context.Context, api API, host, reviewer string, item Item) *
 	}
 	sort.Strings(delta.IncompleteSources)
 	return delta
+}
+
+func compactCI(counts prdelta.CICounts) DeltaCI {
+	return DeltaCI{Success: counts.Success, Failure: counts.Failure, Pending: counts.Pending, Skipped: counts.Skipped,
+		Neutral: counts.Neutral, Cancelled: counts.Cancelled, Other: counts.Other}
 }
 
 func finish(result Result) Result {
