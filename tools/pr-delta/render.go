@@ -35,14 +35,21 @@ func render(result Result, maxBytes int) ([]byte, Result, error) {
 		status.Limitations = appendUnique(status.Limitations, "output_budget")
 		result.Sources[source] = status
 	}
-	trim := func(name, source string, length int, set func(keep int)) error {
+	// trim keeps the longest prefix that fits. owners names the sources whose
+	// records fall in the omitted tail; each candidate is encoded with exactly
+	// those sources marked, so the size check includes their limitations.
+	trim := func(name string, length int, set func(keep int), owners func(keep int) []string) error {
 		if len(data) <= maxBytes || length == 0 {
 			return nil
 		}
-		mark(source)
+		before := cloneSources(result.Sources)
 		keepCount := func(keep int) {
 			set(keep)
 			output.OmittedItems[name] = length - keep
+			result.Sources = cloneSources(before)
+			for _, source := range owners(keep) {
+				mark(source)
+			}
 		}
 		keepCount(0)
 		if data, err = encode(); err != nil || len(data) > maxBytes {
@@ -75,18 +82,32 @@ func render(result Result, maxBytes int) ([]byte, Result, error) {
 		result.PRDiff = &diff
 		files = diff.Files
 	}
+	only := func(source string) func(int) []string { return func(int) []string { return []string{source} } }
+	// new_commits comes from the compare for a fast-forward and from patch
+	// equivalence for a rebase.
+	commitsSource := SourceHeadRelation
+	if result.HeadRelation == RelationRebased {
+		commitsSource = SourceCommits
+	}
 	steps := []struct {
-		name, source string
-		length       int
-		set          func(int)
+		name   string
+		length int
+		set    func(int)
+		owners func(int) []string
 	}{
-		{"ci.non_success", SourceChecks, len(nonSuccess), func(keep int) { result.CI.NonSuccess = nonSuccess[:keep] }},
-		{"threads.items", SourceThreads, len(threads), func(keep int) { result.Threads.Items = threads[:keep] }},
-		{"new_commits", SourceHeadRelation, len(commits), func(keep int) { result.NewCommits = commits[:keep] }},
-		{"pr_diff.files", SourcePRDiff, len(files), func(keep int) { result.PRDiff.Files = files[:keep] }},
+		{"ci.non_success", len(nonSuccess), func(keep int) { result.CI.NonSuccess = nonSuccess[:keep] }, func(keep int) []string {
+			var sources []string
+			for _, record := range nonSuccess[keep:] {
+				sources = appendUnique(sources, ciSource(record.Kind))
+			}
+			return sources
+		}},
+		{"threads.items", len(threads), func(keep int) { result.Threads.Items = threads[:keep] }, only(SourceThreads)},
+		{"new_commits", len(commits), func(keep int) { result.NewCommits = commits[:keep] }, only(commitsSource)},
+		{"pr_diff.files", len(files), func(keep int) { result.PRDiff.Files = files[:keep] }, only(SourcePRDiff)},
 	}
 	for _, step := range steps {
-		if err := trim(step.name, step.source, step.length, step.set); err != nil {
+		if err := trim(step.name, step.length, step.set, step.owners); err != nil {
 			return nil, result, err
 		}
 	}
@@ -94,6 +115,14 @@ func render(result Result, maxBytes int) ([]byte, Result, error) {
 		return nil, result, errors.New("output budget cannot hold the result metadata")
 	}
 	return data, result, nil
+}
+
+// ciSource maps a CIRecord kind to the source that collected it.
+func ciSource(kind string) string {
+	if kind == "status" {
+		return SourceStatuses
+	}
+	return SourceChecks
 }
 
 func cloneSources(sources map[string]evidence.Source) map[string]evidence.Source {
@@ -123,8 +152,8 @@ func writeText(w io.Writer, result Result) error {
 	} else {
 		parts = append(parts, "PR diff not computed")
 	}
-	parts = append(parts, fmt.Sprintf("threads %d (%d unresolved, %d with reply)",
-		result.Threads.Total, result.Threads.Unresolved, result.Threads.UnresolvedWithReply))
+	parts = append(parts, fmt.Sprintf("threads %d (%d unresolved, %d with author reply)",
+		result.Threads.Total, result.Threads.Unresolved, result.Threads.UnresolvedWithAuthorReply))
 	parts = append(parts, ciText(result.CI.Counts), stackText(result))
 	fmt.Fprintln(&b, strings.Join(parts, "; "))
 	if diff := result.PRDiff; diff != nil {

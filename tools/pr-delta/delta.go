@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"aid/internal/github"
 )
 
 // GitHub's compare endpoint returns at most this many files for a comparison.
@@ -123,8 +125,7 @@ func (c *collector) moreCommits(key string, side *compareSide) bool {
 func (c *collector) collectDelta(pull restPull, baseline string) {
 	head := pull.Head.SHA
 	c.collectHeadRelation(baseline, head)
-	base := c.diffBase(pull)
-	headSide, baselineSide, ok := c.collectPRDiff(base, baseline, head)
+	headSide, baselineSide, ok := c.collectPRDiff(pull, baseline, head)
 	if c.result.HeadRelation == RelationRebased {
 		c.collectEquivalence(headSide, baselineSide, ok)
 	}
@@ -180,26 +181,93 @@ func commitRefs(commits []restCommit) []CommitRef {
 	return refs
 }
 
-// diffBase selects the compare base. Open pull requests use the current base
-// branch, or the default branch when that branch was deleted. Closed and merged
-// pull requests use the base SHA GitHub recorded when they closed; their head is
-// usually contained in the base branch, which would empty a branch-based diff.
-func (c *collector) diffBase(pull restPull) DiffBase {
+// diffBase selects the compare base and resolves it to a commit once. Open pull
+// requests use the current base branch, or the default branch when that branch
+// was deleted. Closed and merged pull requests use the base SHA GitHub recorded
+// when they closed; their head is usually contained in the base branch, which
+// would empty a branch-based diff.
+func (c *collector) diffBase(pull restPull) (DiffBase, bool) {
 	info := c.result.PR
 	if info.State != "open" && isSHA(info.BaseSHA) {
-		return DiffBase{Ref: info.BaseSHA, Source: "recorded_base_sha"}
+		recorded := strings.ToLower(info.BaseSHA)
+		return DiffBase{Ref: info.BaseSHA, SHA: recorded, Source: "recorded_base_sha"}, true
 	}
+	base := DiffBase{Ref: pull.Base.Ref, Source: "base_ref"}
 	if exists := c.result.Stack.BaseBranchExists; exists != nil && !*exists && info.DefaultBranch != "" {
-		return DiffBase{Ref: info.DefaultBranch, Source: "default_branch"}
+		base = DiffBase{Ref: info.DefaultBranch, Source: "default_branch"}
 	}
-	return DiffBase{Ref: pull.Base.Ref, Source: "base_ref"}
+	tip, ok := c.branchTip(SourcePRDiff, base.Ref, false)
+	if !ok {
+		return base, false
+	}
+	base.SHA = tip
+	c.baseBranch, c.baseSHA = base.Ref, tip
+	c.reserved++
+	return base, true
 }
 
-func (c *collector) collectPRDiff(base DiffBase, baseline, head string) (compareSide, compareSide, bool) {
+const branchTipQuery = `query($owner: String!, $name: String!, $qualified: String!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $qualified) { target { oid } }
+  }
+}`
+
+// branchTip resolves a branch to its current commit. GraphQL takes the branch
+// name as a variable, so any valid branch name works without path escaping.
+func (c *collector) branchTip(key, branch string, final bool) (string, bool) {
+	var data struct {
+		Repository *struct {
+			Ref *struct {
+				Target *struct {
+					OID string `json:"oid"`
+				} `json:"target"`
+			} `json:"ref"`
+		} `json:"repository"`
+	}
+	variables := map[string]any{"owner": c.ref.Owner, "name": c.ref.Name, "qualified": "refs/heads/" + branch}
+	if !c.graphQL(key, branchTipQuery, variables, &data, final) {
+		return "", false
+	}
+	switch {
+	case data.Repository == nil:
+		c.fail(key, "invalid_response", "branch lookup omitted the repository")
+	case data.Repository.Ref == nil:
+		c.fail(key, string(github.KindNotFound), "compare base branch was not found")
+	case data.Repository.Ref.Target == nil || !isSHA(data.Repository.Ref.Target.OID):
+		c.fail(key, "invalid_response", "branch lookup omitted the target commit")
+	default:
+		return strings.ToLower(data.Repository.Ref.Target.OID), true
+	}
+	return "", false
+}
+
+// checkBaseStable resolves the base branch again at the end of collection. A
+// moved base means the compares may not describe the current pull request, so
+// the PR diff source is marked incomplete with warning base_moved.
+func (c *collector) checkBaseStable() {
+	if c.baseBranch == "" {
+		return
+	}
+	tip, ok := c.branchTip(SourcePRDiff, c.baseBranch, true)
+	if !ok {
+		return
+	}
+	if tip != c.baseSHA {
+		c.warn("base_moved")
+		c.fail(SourcePRDiff, "snapshot_changed", "compare base branch moved during collection")
+	}
+}
+
+func (c *collector) collectPRDiff(pull restPull, baseline, head string) (compareSide, compareSide, bool) {
 	key := SourcePRDiff
+	base, ok := c.diffBase(pull)
 	diff := &PRDiff{Verdict: VerdictUnknown, Base: base, Counts: map[string]int{}, Files: []FileDelta{}}
 	c.result.PRDiff = diff
-	headSide, ok := c.compare(key, base.Ref, head, true)
+	if !ok {
+		diff.Reason = "compare base could not be resolved to a commit"
+		return compareSide{}, compareSide{}, false
+	}
+	headSide, ok := c.compare(key, base.SHA, head, true)
 	if !ok {
 		diff.Reason = "head-side compare was unavailable"
 		return headSide, compareSide{}, false
@@ -207,7 +275,7 @@ func (c *collector) collectPRDiff(base DiffBase, baseline, head string) (compare
 	diff.HeadSide = headSide.describe()
 	baselineSide := headSide
 	if baseline != head {
-		baselineSide, ok = c.compare(key, base.Ref, baseline, true)
+		baselineSide, ok = c.compare(key, base.SHA, baseline, true)
 		if !ok {
 			diff.Reason = "baseline-side compare was unavailable"
 			return headSide, baselineSide, false
@@ -226,7 +294,7 @@ func (c *collector) collectPRDiff(base DiffBase, baseline, head string) (compare
 		}
 	}
 	if baseline != head && baselineSide.mergeBase() != headSide.mergeBase() {
-		realigned, reason := c.realignBaseline(base.Ref, baselineSide)
+		realigned, reason := c.realignBaseline(base.SHA, baselineSide)
 		switch {
 		case reason != "":
 			diff.Reason = reason
@@ -251,7 +319,7 @@ func (c *collector) collectPRDiff(base DiffBase, baseline, head string) (compare
 	}
 	c.addItems(key, len(diff.Files))
 	if diff.Verdict == VerdictUnknown {
-		diff.Reason = "GitHub omitted at least one file patch (binary or too large)"
+		diff.Reason = "at least one file patch was omitted by GitHub (binary or too large) or could not be parsed"
 		c.fail(key, "patch_unavailable", diff.Reason)
 	}
 	c.complete(key)
@@ -310,8 +378,9 @@ func (c *collector) realignBaseline(base string, side compareSide) (*compareSide
 	return &realigned, ""
 }
 
-// baseHistory walks the base's commit list until mergeBase and returns the
-// identity keys of commits seen before it.
+// baseHistory walks the base commit's history until mergeBase and returns the
+// identity keys of commits seen before it. base is the resolved base SHA, so
+// the walk reads the same snapshot as the compares.
 func (c *collector) baseHistory(base, mergeBase string) (map[string]bool, bool) {
 	keys := map[string]bool{}
 	for page := 1; page <= c.opts.MaxPages; page++ {
@@ -437,6 +506,11 @@ func (c *collector) patchIdentity(sha string) (string, bool) {
 			return "", false
 		}
 		hash.Write([]byte(file.Filename + "\x00"))
+		if len(hunks) == 0 {
+			// An empty patch (for example a pure rename) carries no content,
+			// so its status, source path, and blob identify the change.
+			hash.Write([]byte(file.Status + "\x00" + file.PreviousFilename + "\x00" + file.SHA + "\x00"))
+		}
 		for _, hunk := range hunks {
 			hash.Write([]byte(hunk.body + "\x01"))
 		}
@@ -506,13 +580,7 @@ func compareFiles(baselineFiles, headFiles []restFile, maxHunks int) []FileDelta
 		seen[file.Filename] = true
 		old, exists := baseline[file.Filename]
 		if !exists {
-			delta := FileDelta{Path: file.Filename, Status: FileAdded}
-			if patch, ok := effectivePatch(file); ok {
-				if hunks, ok := parseHunks(patch); ok {
-					delta.ChangedHunks, delta.HunksOmitted = pairHunks(nil, hunks, maxHunks)
-				}
-			}
-			files = append(files, delta)
+			files = append(files, sideOnlyFile(file, FileAdded, maxHunks))
 			continue
 		}
 		files = append(files, compareFile(old, file, maxHunks))
@@ -521,13 +589,7 @@ func compareFiles(baselineFiles, headFiles []restFile, maxHunks int) []FileDelta
 		if seen[file.Filename] {
 			continue
 		}
-		delta := FileDelta{Path: file.Filename, Status: FileRemoved}
-		if patch, ok := effectivePatch(file); ok {
-			if hunks, ok := parseHunks(patch); ok {
-				delta.ChangedHunks, delta.HunksOmitted = pairHunks(hunks, nil, maxHunks)
-			}
-		}
-		files = append(files, delta)
+		files = append(files, sideOnlyFile(file, FileRemoved, maxHunks))
 	}
 	sort.SliceStable(files, func(i, j int) bool {
 		if statusOrder[files[i].Status] != statusOrder[files[j].Status] {
@@ -536,6 +598,31 @@ func compareFiles(baselineFiles, headFiles []restFile, maxHunks int) []FileDelta
 		return files[i].Path < files[j].Path
 	})
 	return files
+}
+
+// sideOnlyFile describes a file that entered (added) or left (removed) the PR
+// diff. Without a usable patch its hunks are unknown, so the file is unknown
+// like a changed file whose patch is missing.
+func sideOnlyFile(file restFile, status string, maxHunks int) FileDelta {
+	delta := FileDelta{Path: file.Filename, Status: status}
+	patch, ok := effectivePatch(file)
+	if !ok {
+		delta.Status = VerdictUnknown
+		delta.Reason = "GitHub omitted the patch (binary or too large)"
+		return delta
+	}
+	hunks, ok := parseHunks(patch)
+	if !ok {
+		delta.Status = VerdictUnknown
+		delta.Reason = "patch could not be parsed into hunks"
+		return delta
+	}
+	if status == FileAdded {
+		delta.ChangedHunks, delta.HunksOmitted = pairHunks(nil, hunks, maxHunks)
+	} else {
+		delta.ChangedHunks, delta.HunksOmitted = pairHunks(hunks, nil, maxHunks)
+	}
+	return delta
 }
 
 func compareFile(old, current restFile, maxHunks int) FileDelta {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"aid/internal/evidence"
 	"aid/internal/github"
 )
 
@@ -22,21 +23,30 @@ var (
 	mergeBase1  = sha("3")
 	mergeBase2  = sha("4")
 	recordedSHA = sha("e")
+	mainTip     = sha("b")
 )
 
 type fakeAPI struct {
-	t         *testing.T
-	pulls     []obj
-	pullReads int
-	rest      map[string]any
-	threads   []obj
-	nested    map[string]obj
-	endpoints []string
-	graphVars []map[string]any
+	t           *testing.T
+	pulls       []obj
+	pullReads   int
+	rest        map[string]any
+	threads     []obj
+	threadReads int
+	nested      map[string]obj
+	stack       obj
+	tips        map[string][]string
+	tipReads    map[string]int
+	endpoints   []string
+	graphVars   []map[string]any
 }
 
+// newFake answers branch-tip lookups for main with mainTip and stack lookups
+// with an existing branch and no pull requests unless a test overrides them.
 func newFake(t *testing.T, pulls ...obj) *fakeAPI {
-	return &fakeAPI{t: t, pulls: pulls, rest: map[string]any{}, nested: map[string]obj{}}
+	return &fakeAPI{t: t, pulls: pulls, rest: map[string]any{}, nested: map[string]obj{},
+		stack: obj{"ref": obj{"name": "x"}, "pullRequests": obj{"totalCount": 0, "nodes": []any{}}},
+		tips:  map[string][]string{"refs/heads/main": {mainTip}}, tipReads: map[string]int{}}
 }
 
 func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
@@ -57,10 +67,6 @@ func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
 		return copyJSON(out, obj{"total_count": 0, "check_runs": []any{}})
 	case strings.Contains(endpoint, "/status?"):
 		return copyJSON(out, obj{"total_count": 0, "statuses": []any{}})
-	case strings.Contains(endpoint, "/pulls?"):
-		return copyJSON(out, []any{})
-	case strings.Contains(endpoint, "/branches/"):
-		return copyJSON(out, obj{"name": "x"})
 	}
 	fake.t.Errorf("unexpected REST endpoint %q", endpoint)
 	return &github.Error{Kind: github.KindNotFound, Message: "not found"}
@@ -68,15 +74,23 @@ func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
 
 func (fake *fakeAPI) GraphQL(_ context.Context, query string, variables map[string]any, out any) error {
 	fake.graphVars = append(fake.graphVars, variables)
-	if strings.Contains(query, "node(id:") {
+	switch {
+	case strings.Contains(query, "node(id:"):
 		return copyJSON(out, obj{"node": obj{"comments": fake.nested[variables["id"].(string)]}})
-	}
-	page := 0
-	for _, vars := range fake.graphVars[:len(fake.graphVars)-1] {
-		if _, ok := vars["owner"]; ok {
-			page++
+	case strings.Contains(query, "pullRequests(headRefName:"):
+		return copyJSON(out, obj{"repository": fake.stack})
+	case strings.Contains(query, "target { oid }"):
+		qualified := variables["qualified"].(string)
+		tips, ok := fake.tips[qualified]
+		if !ok {
+			return copyJSON(out, obj{"repository": obj{"ref": nil}})
 		}
+		tip := tips[min(fake.tipReads[qualified], len(tips)-1)]
+		fake.tipReads[qualified]++
+		return copyJSON(out, obj{"repository": obj{"ref": obj{"target": obj{"oid": tip}}}})
 	}
+	page := fake.threadReads
+	fake.threadReads++
 	threads := obj{"pageInfo": obj{"hasNextPage": false}, "nodes": []any{}}
 	if page < len(fake.threads) {
 		threads = fake.threads[page]
@@ -93,7 +107,7 @@ func copyJSON(out, value any) error {
 }
 
 func pullAt(head, baseRef, state string) obj {
-	return obj{"number": 7, "state": state, "merged": state == "merged", "mergeable_state": "clean",
+	return obj{"number": 7, "state": state, "merged": state == "merged", "mergeable_state": "clean", "user": obj{"login": "author"},
 		"head": obj{"ref": "topic", "sha": head, "repo": obj{"full_name": "acme/widget"}},
 		"base": obj{"ref": baseRef, "sha": recordedSHA, "repo": obj{"full_name": "acme/widget", "default_branch": "main"}}}
 }
@@ -131,9 +145,9 @@ const (
 func TestFastForwardReportsNewCommitsAndChangedHunks(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
 	fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("ahead", baselineSHA, []any{commit(headSHA, baselineSHA, "fix: edit b")}, nil)
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat"), commit(headSHA, baselineSHA, "fix: edit b")},
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat"), commit(headSHA, baselineSHA, "fix: edit b")},
 		[]any{file("a.go", "modified", patchEdited), file("b.go", "modified", patchTop)})
-	fake.rest[compareEP("main", baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")},
+	fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")},
 		[]any{file("a.go", "modified", patchTop), file("b.go", "modified", patchTop)})
 
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
@@ -158,9 +172,9 @@ func TestFastForwardReportsNewCommitsAndChangedHunks(t *testing.T) {
 func rebasedFake(t *testing.T, headFiles, baselineFiles []any, headPatch, baselinePatch any) *fakeAPI {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
 	fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("diverged", mergeBase1, []any{commit(movedSHA, mergeBase2, "main work"), commit(headSHA, mergeBase2, "feat")}, nil)
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase2, []any{commit(headSHA, mergeBase2, "feat")}, headFiles)
-	fake.rest[compareEP("main", baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")}, baselineFiles)
-	fake.rest["repos/acme/widget/commits?page=1&per_page=100&sha=main"] = []any{commit(mergeBase2, mergeBase1, "main work"), commit(mergeBase1, sha("0"), "old")}
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase2, []any{commit(headSHA, mergeBase2, "feat")}, headFiles)
+	fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")}, baselineFiles)
+	fake.rest["repos/acme/widget/commits?page=1&per_page=100&sha="+mainTip] = []any{commit(mergeBase2, mergeBase1, "main work"), commit(mergeBase1, sha("0"), "old")}
 	fake.rest["repos/acme/widget/commits/"+headSHA] = obj{"sha": headSHA, "parents": []any{obj{"sha": mergeBase2}}, "files": []any{file("a.go", "modified", headPatch)}}
 	fake.rest["repos/acme/widget/commits/"+baselineSHA] = obj{"sha": baselineSHA, "parents": []any{obj{"sha": mergeBase1}}, "files": []any{file("a.go", "modified", baselinePatch)}}
 	return fake
@@ -247,7 +261,7 @@ func TestReviewerDefaultsToAuthenticatedUser(t *testing.T) {
 		obj{"id": 12, "user": obj{"login": "other"}, "state": "APPROVED", "commit_id": baselineSHA, "submitted_at": "2026-01-03T00:00:00Z"},
 		obj{"id": 13, "user": obj{"login": "octo"}, "state": "PENDING", "commit_id": baselineSHA},
 	}
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, []any{commit(headSHA, mergeBase1, "feat")}, []any{file("a.go", "modified", patchTop)})
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, []any{commit(headSHA, mergeBase1, "feat")}, []any{file("a.go", "modified", patchTop)})
 	got := Collect(context.Background(), fake, testRef(), Options{})
 	if got.Reviewer != "Octo" || got.ReviewerSource != "authenticated_user" {
 		t.Fatalf("reviewer = %q (%s)", got.Reviewer, got.ReviewerSource)
@@ -262,15 +276,14 @@ func TestReviewerDefaultsToAuthenticatedUser(t *testing.T) {
 
 func TestDeletedBaseBranchFallsBackToDefaultBranch(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "feature", "open"))
-	fake.rest["repos/acme/widget/branches/feature"] = &github.Error{Kind: github.KindNotFound, Message: "GitHub resource was not found"}
-	fake.rest["repos/acme/widget/pulls?head=acme%3Afeature&per_page=100&state=all"] = []any{
-		obj{"number": 6, "state": "closed", "merged_at": "2026-01-01T00:00:00Z", "head": obj{"ref": "feature", "repo": obj{"full_name": "acme/widget"}}},
-	}
+	fake.stack = obj{"ref": nil, "pullRequests": obj{"totalCount": 1, "nodes": []any{
+		obj{"number": 6, "state": "MERGED", "headRepository": obj{"nameWithOwner": "acme/widget"}},
+	}}}
 	fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("ahead", baselineSHA, []any{commit(headSHA, baselineSHA, "more")}, nil)
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat"), commit(headSHA, baselineSHA, "more")}, []any{file("a.go", "modified", patchTop)})
-	fake.rest[compareEP("main", baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")}, []any{file("a.go", "modified", patchTop)})
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat"), commit(headSHA, baselineSHA, "more")}, []any{file("a.go", "modified", patchTop)})
+	fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, []any{commit(baselineSHA, mergeBase1, "feat")}, []any{file("a.go", "modified", patchTop)})
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
-	if got.PRDiff.Base != (DiffBase{Ref: "main", Source: "default_branch"}) || !reflect.DeepEqual(got.Warnings, []string{"base_branch_missing"}) {
+	if got.PRDiff.Base != (DiffBase{Ref: "main", SHA: mainTip, Source: "default_branch"}) || !reflect.DeepEqual(got.Warnings, []string{"base_branch_missing"}) {
 		t.Fatalf("base = %+v warnings = %v", got.PRDiff.Base, got.Warnings)
 	}
 	stack := got.Stack
@@ -293,27 +306,35 @@ func comment(id int64, login, body string) obj {
 
 func TestThreadReplyDetection(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
 	fake.threads = []obj{{"pageInfo": obj{"hasNextPage": true, "endCursor": "p1"}, "nodes": []any{
 		threadNode("T1", false, []any{comment(4000000001, "octo", "please fix"), comment(2, "author", "first")}, true),
 		threadNode("T2", false, []any{comment(3, "octo", "nit"), comment(4, "author", "done"), comment(5, "octo", "thanks")}, false),
 	}}, {"pageInfo": obj{"hasNextPage": false}, "nodes": []any{
 		threadNode("T3", false, []any{comment(6, "someone", "mine"), comment(7, "author", "reply")}, false),
 		threadNode("T4", true, []any{comment(8, "octo", "q"), comment(9, "author", "a")}, false),
+		threadNode("T5", false, []any{comment(11, "octo", "q"), comment(12, "author", "fixed"), comment(13, "helper", "lgtm")}, false),
+		threadNode("T6", false, []any{comment(14, "octo", "q"), comment(15, "copilot", "bot says")}, false),
 	}}}
 	fake.nested["T1"] = obj{"pageInfo": obj{"hasNextPage": false}, "nodes": []any{comment(10, "author", "Fixed   in\nabc1234 with a long explanation")}}
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: headSHA, TextLimit: 16})
 	threads := got.Threads
-	if threads.Total != 3 || threads.Unresolved != 2 || threads.UnresolvedWithReply != 1 {
+	if threads.Total != 5 || threads.Unresolved != 4 || threads.UnresolvedWithAuthorReply != 2 {
 		t.Fatalf("thread counts = %+v", threads)
 	}
 	first := threads.Items[0]
 	if first.ThreadID != "T1" || first.FirstCommentID != 4000000001 || !first.AuthorRepliedAfter ||
-		first.LastReplyAuthor != "author" || first.LastReplyExcerpt != "Fixed in abc1234" || !first.LastReplyClipped {
+		first.LastReplyBy != "author" || first.LastReplyExcerpt != "Fixed in abc1234" || !first.LastReplyClipped {
 		t.Errorf("T1 = %+v", first)
 	}
 	if threads.Items[1].AuthorRepliedAfter || threads.Items[1].LastReplyExcerpt != "" {
 		t.Errorf("T2 reviewer replied last; got %+v", threads.Items[1])
+	}
+	if fifth := threads.Items[3]; !fifth.AuthorRepliedAfter || fifth.LastReplyBy != "helper" || fifth.LastReplyExcerpt != "lgtm" {
+		t.Errorf("T5 author replied before a third party; got %+v", fifth)
+	}
+	if sixth := threads.Items[4]; sixth.AuthorRepliedAfter || sixth.LastReplyBy != "copilot" || sixth.LastReplyExcerpt != "bot says" {
+		t.Errorf("T6 only a bot replied; got %+v", sixth)
 	}
 	if !got.Sources[SourceThreads].Complete || got.Sources[SourceThreads].Requests != 3 {
 		t.Errorf("threads source = %+v", got.Sources[SourceThreads])
@@ -323,8 +344,8 @@ func TestThreadReplyDetection(t *testing.T) {
 func TestPatchOmittedIsUnknownAndIncomplete(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
 	fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("ahead", baselineSHA, []any{commit(headSHA, baselineSHA, "bin")}, nil)
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("logo.png", "modified", nil), file("a.go", "modified", patchTop)})
-	fake.rest[compareEP("main", baselineSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("logo.png", "modified", nil), file("a.go", "modified", patchTop)})
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("logo.png", "modified", nil), file("a.go", "modified", patchTop)})
+	fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("logo.png", "modified", nil), file("a.go", "modified", patchTop)})
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
 	if got.Complete || got.PRDiff.Verdict != VerdictUnknown || got.Sources[SourcePRDiff].Error == nil {
 		t.Fatalf("Collect() complete=%v diff=%+v source=%+v", got.Complete, got.PRDiff, got.Sources[SourcePRDiff])
@@ -336,7 +357,7 @@ func TestPatchOmittedIsUnknownAndIncomplete(t *testing.T) {
 
 func TestHeadMovedDuringCollectionIsIncomplete(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"), pullAt(sha("7"), "main", "open"))
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: headSHA})
 	if got.Complete || got.HeadStable.Stable || got.HeadStable.End != sha("7") || !reflect.DeepEqual(got.Warnings, []string{"head_moved"}) {
 		t.Fatalf("head_stable = %+v warnings = %v complete = %v", got.HeadStable, got.Warnings, got.Complete)
@@ -346,7 +367,7 @@ func TestHeadMovedDuringCollectionIsIncomplete(t *testing.T) {
 func TestShortSinceCommitIsResolved(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
 	fake.rest["repos/acme/widget/commits/2222222"] = obj{"sha": headSHA}
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
 	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: "2222222"})
 	if got.Baseline == nil || got.Baseline.Commit != headSHA || got.Baseline.Source != "flag" || !got.Complete {
 		t.Fatalf("baseline = %+v complete = %v", got.Baseline, got.Complete)
@@ -355,7 +376,7 @@ func TestShortSinceCommitIsResolved(t *testing.T) {
 
 func TestCICountsAndNonSuccessNames(t *testing.T) {
 	fake := newFake(t, pullAt(headSHA, "main", "open"))
-	fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
 	fake.rest["repos/acme/widget/commits/"+headSHA+"/check-runs?filter=latest&per_page=100&page=1"] = obj{"total_count": 4, "check_runs": []any{
 		obj{"name": "lint", "status": "completed", "conclusion": "success"},
 		obj{"name": "test", "status": "completed", "conclusion": "failure"},
@@ -384,5 +405,105 @@ func TestParseHunksIgnoresHeaderOffsets(t *testing.T) {
 	}
 	if _, ok := parseHunks("not a patch"); ok {
 		t.Error("patch without a hunk header should not parse")
+	}
+}
+
+func TestBaseMovedDuringCollectionIsIncomplete(t *testing.T) {
+	fake := newFake(t, pullAt(headSHA, "main", "open"))
+	fake.tips["refs/heads/main"] = []string{mainTip, sha("f")}
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: headSHA})
+	if got.Complete || !got.HeadStable.Stable || !reflect.DeepEqual(got.Warnings, []string{"base_moved"}) {
+		t.Fatalf("complete = %v head_stable = %+v warnings = %v", got.Complete, got.HeadStable, got.Warnings)
+	}
+	if source := got.Sources[SourcePRDiff]; source.Error == nil || source.Error.Code != "snapshot_changed" {
+		t.Errorf("pr_diff source = %+v", source)
+	}
+	if got.PRDiff.Base != (DiffBase{Ref: "main", SHA: mainTip, Source: "base_ref"}) || fake.tipReads["refs/heads/main"] != 2 {
+		t.Errorf("base = %+v tip reads = %d", got.PRDiff.Base, fake.tipReads["refs/heads/main"])
+	}
+}
+
+func TestBaseNeedingPathEscapesUsesGraphQL(t *testing.T) {
+	branch, tip := "stack+fix#1", sha("c")
+	fake := newFake(t, pullAt(headSHA, branch, "open"))
+	fake.tips["refs/heads/"+branch] = []string{tip}
+	fake.stack = obj{"ref": obj{"name": branch}, "pullRequests": obj{"totalCount": 3, "nodes": []any{
+		obj{"number": 9, "state": "OPEN", "headRepository": obj{"nameWithOwner": "fork/widget"}},
+		obj{"number": 5, "state": "MERGED", "headRepository": obj{"nameWithOwner": "acme/widget"}},
+		obj{"number": 4, "state": "OPEN", "headRepository": obj{"nameWithOwner": "acme/widget"}},
+	}}}
+	fake.rest[compareEP(tip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: headSHA})
+	if !got.Complete || got.PRDiff.Base != (DiffBase{Ref: branch, SHA: tip, Source: "base_ref"}) {
+		t.Fatalf("complete = %v base = %+v sources = %+v", got.Complete, got.PRDiff.Base, got.Sources)
+	}
+	if stack := got.Stack; stack.BaseBranchExists == nil || !*stack.BaseBranchExists || stack.BasePR == nil ||
+		*stack.BasePR != (BasePR{Number: 4, State: "open"}) {
+		t.Errorf("stack = %+v base_pr = %+v", stack, stack.BasePR)
+	}
+	for _, endpoint := range fake.endpoints {
+		if strings.Contains(endpoint, "stack") || strings.Contains(endpoint, "/branches/") || strings.Contains(endpoint, "/pulls?") {
+			t.Errorf("branch name reached a REST endpoint: %s", endpoint)
+		}
+	}
+	var branchVars int
+	for _, vars := range fake.graphVars {
+		if vars["branch"] == branch || vars["qualified"] == "refs/heads/"+branch {
+			branchVars++
+		}
+	}
+	if branchVars != 3 {
+		t.Errorf("branch passed as a GraphQL variable %d times, want 3 (stack, base, final base check)", branchVars)
+	}
+}
+
+func TestPureRenameIdentityIncludesSourceAndBlob(t *testing.T) {
+	fake := newFake(t)
+	rename := func(id, from, blob string) {
+		fake.rest["repos/acme/widget/commits/"+id] = obj{"sha": id, "parents": []any{obj{"sha": mergeBase1}},
+			"files": []any{obj{"filename": "new.go", "status": "renamed", "previous_filename": from, "sha": blob, "changes": 0}}}
+	}
+	rename(sha("a"), "old.go", "blob1")
+	rename(sha("b"), "other.go", "blob1")
+	rename(sha("c"), "old.go", "blob2")
+	rename(sha("d"), "old.go", "blob1")
+	c := &collector{ctx: context.Background(), api: fake, opts: normalizeOptions(Options{}), ref: testRef(), reserved: 1,
+		result: Result{Sources: map[string]evidence.Source{}}}
+	ids := map[string]string{}
+	for _, id := range []string{sha("a"), sha("b"), sha("c"), sha("d")} {
+		identity, ok := c.patchIdentity(id)
+		if !ok {
+			t.Fatalf("patchIdentity(%s) failed", id)
+		}
+		ids[id] = identity
+	}
+	if ids[sha("a")] != ids[sha("d")] {
+		t.Error("identical renames should share an identity")
+	}
+	if ids[sha("a")] == ids[sha("b")] || ids[sha("a")] == ids[sha("c")] {
+		t.Error("renames from a different source or blob should not share an identity")
+	}
+}
+
+func TestSideOnlyFileWithoutUsablePatchIsUnknown(t *testing.T) {
+	fake := newFake(t, pullAt(headSHA, "main", "open"))
+	fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("ahead", baselineSHA, []any{commit(headSHA, baselineSHA, "bin")}, nil)
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil,
+		[]any{file("a.go", "modified", patchTop), file("logo.png", "added", nil)})
+	fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, nil,
+		[]any{file("a.go", "modified", patchTop), file("old.txt", "added", "not a patch")})
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
+	if got.Complete || got.PRDiff.Verdict != VerdictUnknown || got.Sources[SourcePRDiff].Error == nil {
+		t.Fatalf("complete = %v diff = %+v source = %+v", got.Complete, got.PRDiff, got.Sources[SourcePRDiff])
+	}
+	want := map[string]string{"logo.png": "GitHub omitted the patch (binary or too large)", "old.txt": "patch could not be parsed into hunks"}
+	for _, file := range got.PRDiff.Files {
+		if reason, ok := want[file.Path]; ok && (file.Status != VerdictUnknown || file.Reason != reason) {
+			t.Errorf("%s = %+v, want unknown with %q", file.Path, file, reason)
+		}
+	}
+	if got.PRDiff.Counts[VerdictUnknown] != 2 || got.PRDiff.Counts[FileAdded] != 0 || got.PRDiff.Counts[FileRemoved] != 0 {
+		t.Errorf("counts = %v", got.PRDiff.Counts)
 	}
 }

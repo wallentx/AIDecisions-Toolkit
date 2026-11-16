@@ -84,7 +84,7 @@ func TestCLIExitCodes(t *testing.T) {
 	configPath := configForCLI(t)
 	stable := func(t *testing.T) *fakeAPI {
 		fake := newFake(t, pullAt(headSHA, "main", "open"))
-		fake.rest[compareEP("main", headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+		fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
 		return fake
 	}
 	moved := func(t *testing.T) *fakeAPI {
