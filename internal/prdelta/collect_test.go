@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -39,6 +40,30 @@ type fakeAPI struct {
 	tipReads    map[string]int
 	endpoints   []string
 	graphVars   []map[string]any
+	// modes maps "commit:path" to a file mode; other lookups answer 0o100644.
+	modes     map[string]int
+	modeErr   error
+	modeReads int
+}
+
+var modeField = regexp.MustCompile(`(c\d+): object\(oid: \$c\d+\) \{ \.\.\. on Commit \{ (.*) \} \}`)
+var modeLookup = regexp.MustCompile(`(f\d+): file\(path: \$(p\d+)\)`)
+
+// modeResponse answers a file-mode query from the commit and path variables.
+func (fake *fakeAPI) modeResponse(query string, variables map[string]any) obj {
+	repository := obj{}
+	for _, commit := range modeField.FindAllStringSubmatch(query, -1) {
+		files := obj{}
+		for _, lookup := range modeLookup.FindAllStringSubmatch(commit[2], -1) {
+			mode, ok := fake.modes[variables[commit[1]].(string)+":"+variables[lookup[2]].(string)]
+			if !ok {
+				mode = 0o100644
+			}
+			files[lookup[1]] = obj{"mode": mode}
+		}
+		repository[commit[1]] = files
+	}
+	return obj{"repository": repository}
 }
 
 // newFake answers branch-tip lookups for main with mainTip and stack lookups
@@ -75,6 +100,12 @@ func (fake *fakeAPI) REST(_ context.Context, endpoint string, out any) error {
 func (fake *fakeAPI) GraphQL(_ context.Context, query string, variables map[string]any, out any) error {
 	fake.graphVars = append(fake.graphVars, variables)
 	switch {
+	case strings.Contains(query, "file(path:"):
+		fake.modeReads++
+		if fake.modeErr != nil {
+			return fake.modeErr
+		}
+		return copyJSON(out, fake.modeResponse(query, variables))
 	case strings.Contains(query, "node(id:"):
 		return copyJSON(out, obj{"node": obj{"comments": fake.nested[variables["id"].(string)]}})
 	case strings.Contains(query, "pullRequests(headRefName:"):
@@ -505,5 +536,112 @@ func TestSideOnlyFileWithoutUsablePatchIsUnknown(t *testing.T) {
 	}
 	if got.PRDiff.Counts[VerdictUnknown] != 2 || got.PRDiff.Counts[FileAdded] != 0 || got.PRDiff.Counts[FileRemoved] != 0 {
 		t.Errorf("counts = %v", got.PRDiff.Counts)
+	}
+}
+
+func TestRenameWithEditsIdentityIncludesSource(t *testing.T) {
+	fake := newFake(t)
+	rename := func(id, from string) {
+		fake.rest["repos/acme/widget/commits/"+id] = obj{"sha": id, "parents": []any{obj{"sha": mergeBase1}},
+			"files": []any{obj{"filename": "new.go", "status": "renamed", "previous_filename": from, "patch": patchTop, "sha": "blob-" + id, "changes": 1}}}
+	}
+	rename(sha("a"), "old.go")
+	rename(sha("b"), "other.go")
+	rename(sha("c"), "old.go")
+	fake.rest["repos/acme/widget/commits/"+sha("d")] = obj{"sha": sha("d"), "parents": []any{obj{"sha": mergeBase1}},
+		"files": []any{file("new.go", "modified", patchTop)}}
+	c := &collector{ctx: context.Background(), api: fake, opts: normalizeOptions(Options{}), ref: testRef(), reserved: 1,
+		result: Result{Sources: map[string]evidence.Source{}}}
+	ids := map[string]string{}
+	for _, id := range []string{sha("a"), sha("b"), sha("c"), sha("d")} {
+		identity, ok := c.patchIdentity(id)
+		if !ok {
+			t.Fatalf("patchIdentity(%s) failed", id)
+		}
+		ids[id] = identity
+	}
+	if ids[sha("a")] != ids[sha("c")] {
+		t.Error("identical edited renames should share an identity even when blobs differ")
+	}
+	if ids[sha("a")] == ids[sha("b")] || ids[sha("a")] == ids[sha("d")] {
+		t.Error("edited renames from a different source, or a plain modification, should not share an identity")
+	}
+}
+
+func TestThreadCommentPagesCountTheFirstPage(t *testing.T) {
+	fake := newFake(t, pullAt(headSHA, "main", "open"))
+	fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, nil)
+	fake.threads = []obj{{"pageInfo": obj{"hasNextPage": false}, "nodes": []any{
+		threadNode("T1", false, []any{comment(1, "octo", "please fix")}, true),
+	}}}
+	fake.nested["T1"] = obj{"pageInfo": obj{"hasNextPage": false}, "nodes": []any{comment(2, "author", "fixed")}}
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: headSHA, MaxPages: 1})
+	source := got.Sources[SourceThreads]
+	if got.Complete || source.Complete || source.Error == nil || source.Error.Code != "page_limit" || source.Requests != 1 {
+		t.Fatalf("complete = %v threads source = %+v", got.Complete, source)
+	}
+}
+
+func TestPairHunksReportsTheDroppedInstanceOfARepeatedBody(t *testing.T) {
+	body := "\n a\n+b\n c"
+	old := []hunk{{header: "@@ -10,2 +10,3 @@", body: body}, {header: "@@ -100,2 +101,3 @@", body: body}}
+	for _, test := range []struct {
+		name, kept, removed string
+	}{
+		{"head keeps the first", "@@ -10,2 +10,3 @@", "@@ -100,2 +101,3 @@"},
+		{"head keeps the second", "@@ -100,2 +100,3 @@", "@@ -10,2 +10,3 @@"},
+	} {
+		changes, omitted := pairHunks(old, []hunk{{header: test.kept, body: body}}, 20)
+		if want := []HunkChange{{OldHeader: test.removed}}; omitted != 0 || !reflect.DeepEqual(changes, want) {
+			t.Errorf("%s: changes = %+v omitted = %d, want %+v", test.name, changes, omitted, want)
+		}
+	}
+}
+
+func TestFileModeChangeWithSameHunksIsChanged(t *testing.T) {
+	fastForward := func() *fakeAPI {
+		fake := newFake(t, pullAt(headSHA, "main", "open"))
+		fake.rest[compareEP(baselineSHA, headSHA)] = compareOf("ahead", baselineSHA, []any{commit(headSHA, baselineSHA, "chmod")}, nil)
+		fake.rest[compareEP(mainTip, headSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("run.sh", "modified", patchTop), file("a.go", "modified", patchTop)})
+		fake.rest[compareEP(mainTip, baselineSHA)] = compareOf("ahead", mergeBase1, nil, []any{file("run.sh", "modified", patchTop), file("a.go", "modified", patchTop)})
+		return fake
+	}
+	fake := fastForward()
+	fake.modes = map[string]int{headSHA + ":run.sh": 0o100755}
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
+	if !got.Complete || got.PRDiff.Verdict != VerdictChanged || fake.modeReads != 1 {
+		t.Fatalf("complete = %v diff = %+v mode reads = %d", got.Complete, got.PRDiff, fake.modeReads)
+	}
+	if first := got.PRDiff.Files[0]; first.Path != "run.sh" || first.Status != VerdictChanged || !first.ModeChanged ||
+		first.Reason != "file mode change differs: baseline side no mode change, head side 100644 -> 100755" {
+		t.Errorf("run.sh = %+v", first)
+	}
+	if second := got.PRDiff.Files[1]; second.Path != "a.go" || second.Status != VerdictUnchanged || second.ModeChanged {
+		t.Errorf("a.go = %+v", second)
+	}
+
+	fake = fastForward()
+	fake.modeErr = &github.Error{Kind: github.KindGraphQLError, Message: "GitHub GraphQL response contained errors"}
+	got = Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
+	if got.Complete || got.PRDiff.Verdict != VerdictUnknown || got.PRDiff.Counts[VerdictUnknown] != 2 ||
+		got.PRDiff.Files[0].Reason != "file mode could not be read" {
+		t.Errorf("failed mode lookup: complete = %v diff = %+v", got.Complete, got.PRDiff)
+	}
+}
+
+func TestFileModeChangeFromTheBaseIsNotADelta(t *testing.T) {
+	// The base made a.go executable between the two merge bases. Both PR
+	// diffs leave the mode alone, so the rebase is still moved_only.
+	fake := rebasedFake(t, []any{file("a.go", "modified", patchMoved)}, []any{file("a.go", "modified", patchTop)}, patchMoved, patchTop)
+	fake.modes = map[string]int{mergeBase2 + ":a.go": 0o100755, headSHA + ":a.go": 0o100755}
+	got := Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
+	if !got.Complete || got.PRDiff.Verdict != VerdictMovedOnly || fake.modeReads != 1 {
+		t.Fatalf("complete = %v diff = %+v mode reads = %d", got.Complete, got.PRDiff, fake.modeReads)
+	}
+	fake = rebasedFake(t, []any{file("a.go", "modified", patchMoved)}, []any{file("a.go", "modified", patchTop)}, patchMoved, patchTop)
+	fake.modes = map[string]int{headSHA + ":a.go": 0o100755}
+	got = Collect(context.Background(), fake, testRef(), Options{Reviewer: "octo", SinceCommit: baselineSHA})
+	if file := got.PRDiff.Files[0]; got.PRDiff.Verdict != VerdictChanged || !file.ModeChanged {
+		t.Errorf("head-side chmod: diff = %+v", got.PRDiff)
 	}
 }

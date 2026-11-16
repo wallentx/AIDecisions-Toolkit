@@ -154,7 +154,10 @@ type FileDelta struct {
 	Status       string       `json:"status"`
 	ChangedHunks []HunkChange `json:"changed_hunks,omitempty"`
 	HunksOmitted int          `json:"changed_hunks_omitted,omitempty"`
-	Reason       string       `json:"reason,omitempty"`
+	// ModeChanged is true when the file's hunks match but the PR's change to
+	// its file mode (for example the executable bit) differs between sides.
+	ModeChanged bool   `json:"mode_changed,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // HunkChange pairs an unmatched baseline-side hunk header (old) with an
