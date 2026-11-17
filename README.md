@@ -56,6 +56,7 @@ your preferred binary directory with `go run ./cmd/aid-build --out DIRECTORY`.
 | `AID -l`, `AID --list` | List tools and descriptions |
 | `AID -i`, `AID --init` | Open the agent-client installer |
 | `AID -u`, `AID --update` | Fetch release source, build locally, replace installed binaries |
+| `AID --mcp` | Serve tool collectors to an MCP client over stdio ([docs/mcp.md](docs/mcp.md)) |
 | `AID -h`, `AID --help` | Show usage |
 
 `--build` starts the design intake; `go run ./cmd/aid-build` compiles the code.

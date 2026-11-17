@@ -1,0 +1,7 @@
+{
+  "id": "pr-delta",
+  "command": "AID.pr-delta",
+  "version": "0.1.0",
+  "description": "Report what changed in a GitHub pull request since a reviewer's last review: head relation, PR-diff hunk delta, the reviewer's threads, CI, and stack state.",
+  "package": "./cmd/AID.pr-delta"
+}

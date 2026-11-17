@@ -37,7 +37,7 @@ func TestMachineReadableCatalog(t *testing.T) {
 		}
 		commands[tool.Command] = true
 	}
-	for _, command := range []string{"AID.ci", "AID.diff", "AID.discover", "AID.pr", "AID.runtime"} {
+	for _, command := range []string{"AID.ci", "AID.diff", "AID.discover", "AID.pr", "AID.pr-delta", "AID.review-queue", "AID.runtime"} {
 		if !commands[command] {
 			t.Errorf("catalog is missing %s", command)
 		}

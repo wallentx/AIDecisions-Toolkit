@@ -1,0 +1,16 @@
+{
+  "id": "review-queue",
+  "command": "AID.review-queue",
+  "version": "0.1.0",
+  "description": "List open GitHub pull requests waiting on a reviewer, each tagged new or re-review, with the pr-delta verdict for re-reviews.",
+  "package": "./cmd/AID.review-queue",
+  "collector": {
+    "name": "github_review_queue",
+    "description": "Open pull requests waiting on the user's review, new versus re-review.",
+    "args": ["--json"],
+    "workspace_flag": "--workspace",
+    "timeout_flag": "--timeout",
+    "ttl_seconds": 60,
+    "timeout_seconds": 60
+  }
+}

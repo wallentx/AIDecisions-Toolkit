@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -20,6 +21,7 @@ import (
 	"aid/internal/config"
 	"aid/internal/installer"
 	"aid/internal/intake"
+	"aid/internal/mcp"
 	"aid/internal/update"
 )
 
@@ -32,6 +34,7 @@ Usage: AID ACTION [options]
   -l, --list    List tools and their descriptions
   -i, --init    Install/manage agent skills in a provider picker
   -u, --update  Fetch the latest GitHub release and build it locally
+      --mcp     Serve tool collectors to an MCP client over stdio
   -h, --help    Show this help
 
 Use --json with --list/--version for structured output.
@@ -96,6 +99,12 @@ func Run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 			}
 		}
 		return code
+	case "--mcp":
+		if len(actionArgs) != 0 {
+			fmt.Fprintln(stderr, "error: --mcp accepts no extra arguments")
+			return 2
+		}
+		return serveMCP(configPath, stdin, stdout, stderr)
 	case "-u", "--update":
 		if configPath != "" {
 			actionArgs = append(actionArgs, "--config", configPath)
@@ -104,6 +113,37 @@ func Run(args []string, stdin *os.File, stdout, stderr io.Writer) int {
 	default:
 		return fail(stderr, fmt.Errorf("unknown action %q; run AID --help", action))
 	}
+}
+
+// serveMCP runs the stdio MCP server until the client closes stdin. A
+// --config path reaches collectors through AID_CONFIG.
+func serveMCP(configPath string, stdin *os.File, stdout, stderr io.Writer) int {
+	tools, err := catalog.All()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	env := os.Environ()
+	if configPath != "" {
+		expanded, err := config.ExpandPath(configPath)
+		if err == nil {
+			expanded, err = filepath.Abs(expanded)
+		}
+		if err != nil {
+			return fail(stderr, err)
+		}
+		env = append(env, "AID_CONFIG="+expanded)
+	}
+	var input io.Reader = os.Stdin
+	if stdin != nil {
+		input = stdin
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	server := mcp.New(mcp.Options{Tools: tools, Env: env, Log: stderr})
+	if err := server.Serve(ctx, input, stdout); err != nil {
+		return fail(stderr, err)
+	}
+	return 0
 }
 
 type toolStatus struct {

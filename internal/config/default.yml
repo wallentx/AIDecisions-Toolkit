@@ -28,6 +28,19 @@ tools:
     timeout_seconds: 120
     max_output_bytes: 131072
     text_limit: 4000
+  pr-delta:
+    gh: gh
+    hostname: github.com
+    timeout_seconds: 120
+    max_output_bytes: 131072
+    text_limit: 280
+  review-queue:
+    gh: gh
+    hostname: github.com
+    owners: []  # Empty infers owners from the workspace's git remotes
+    timeout_seconds: 120
+    max_prs: 25
+    max_output_bytes: 65536
   ci:
     gh: gh
     hostname: github.com

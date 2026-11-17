@@ -16,15 +16,79 @@ import (
 )
 
 type Tool struct {
-	ID          string `json:"id"`
-	Command     string `json:"command"`
-	Version     string `json:"version"`
-	Description string `json:"description"`
-	Package     string `json:"package"`
-	Skill       []byte `json:"-"`
+	ID          string     `json:"id"`
+	Command     string     `json:"command"`
+	Version     string     `json:"version"`
+	Description string     `json:"description"`
+	Package     string     `json:"package"`
+	Collector   *Collector `json:"collector,omitempty"`
+	Skill       []byte     `json:"-"`
 }
 
-var idPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// Collector declares a cheap, read-only run that the AID MCP server may
+// execute on request. Args are fixed; the server appends only
+// WorkspaceFlag with the client's workspace root, and TimeoutFlag with a
+// collection budget shorter than TimeoutSeconds.
+type Collector struct {
+	Name           string   `json:"name"`
+	Description    string   `json:"description"`
+	Args           []string `json:"args"`
+	WorkspaceFlag  string   `json:"workspace_flag,omitempty"`
+	TimeoutFlag    string   `json:"timeout_flag,omitempty"`
+	TTLSeconds     int      `json:"ttl_seconds"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
+
+var (
+	idPattern            = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	collectorNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	collectorArgPattern  = regexp.MustCompile(`^--[a-z][a-z0-9-]*(=[A-Za-z0-9._,:/@-]*)?$`)
+	collectorFlagPattern = regexp.MustCompile(`^--[a-z][a-z0-9-]*$`)
+)
+
+func validateCollector(collector *Collector) error {
+	if collector == nil {
+		return nil
+	}
+	if !collectorNamePattern.MatchString(collector.Name) || collector.Description == "" || len(collector.Args) > 32 {
+		return fmt.Errorf("invalid collector %q", collector.Name)
+	}
+	hasJSON := false
+	for _, arg := range collector.Args {
+		if !collectorArgPattern.MatchString(arg) {
+			return fmt.Errorf("collector %s has an invalid argument", collector.Name)
+		}
+		hasJSON = hasJSON || arg == "--json"
+	}
+	if !hasJSON {
+		return fmt.Errorf("collector %s must request --json output", collector.Name)
+	}
+	if collector.WorkspaceFlag != "" && !collectorFlagPattern.MatchString(collector.WorkspaceFlag) {
+		return fmt.Errorf("collector %s has an invalid workspace_flag", collector.Name)
+	}
+	if collector.TimeoutFlag != "" && (!collectorFlagPattern.MatchString(collector.TimeoutFlag) || collector.TimeoutFlag == collector.WorkspaceFlag) {
+		return fmt.Errorf("collector %s has an invalid timeout_flag", collector.Name)
+	}
+	if collector.TTLSeconds < 0 || collector.TTLSeconds > 86400 || collector.TimeoutSeconds < 1 || collector.TimeoutSeconds > 3600 {
+		return fmt.Errorf("collector %s needs ttl_seconds 0-86400 and timeout_seconds 1-3600", collector.Name)
+	}
+	return nil
+}
+
+// checkCollectorNames rejects two tools declaring the same collector name.
+func checkCollectorNames(tools []Tool) error {
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		if tool.Collector == nil {
+			continue
+		}
+		if seen[tool.Collector.Name] {
+			return fmt.Errorf("duplicate collector name %q", tool.Collector.Name)
+		}
+		seen[tool.Collector.Name] = true
+	}
+	return nil
+}
 
 func parse(data, skill []byte) (Tool, error) {
 	var tool Tool
@@ -33,6 +97,9 @@ func parse(data, skill []byte) (Tool, error) {
 	}
 	if !idPattern.MatchString(tool.ID) || tool.Command != "AID."+tool.ID || tool.Package != "./cmd/"+tool.Command || !semver.IsValid("v"+tool.Version) || tool.Description == "" {
 		return tool, fmt.Errorf("invalid tool manifest for %q", tool.ID)
+	}
+	if err := validateCollector(tool.Collector); err != nil {
+		return tool, err
 	}
 	if len(skill) == 0 {
 		return tool, fmt.Errorf("missing agent skill for %s", tool.Command)
@@ -77,6 +144,9 @@ func fromFS(source fs.FS) ([]Tool, error) {
 		result = append(result, tool)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	if err := checkCollectorNames(result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -112,5 +182,8 @@ func FromDirectory(root string) ([]Tool, error) {
 		result = append(result, tool)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	if err := checkCollectorNames(result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
