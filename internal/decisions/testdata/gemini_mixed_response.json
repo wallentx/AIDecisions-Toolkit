@@ -1,0 +1,51 @@
+{
+  "answers": {
+    "is_breaking": {
+      "type": "noul",
+      "noul": 0.92,
+      "confidence": 0.92
+    },
+    "department": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+        "billing": 0.95,
+        "technical": 0.03,
+        "other": 0.02
+      },
+      "confidence": 0.93
+    },
+    "needs_human": {
+      "type": "choice",
+      "choice": "true",
+      "probabilities": {
+        "true": 0.88,
+        "false": 0.12
+      },
+      "confidence": 0.76
+    },
+    "severity": {
+      "type": "score",
+      "score": 1.12,
+      "legend": {
+        "0": "Cosmetic: Appearance only.",
+        "1": "Workaround available: Another path works.",
+        "2": "Fully blocked: No workaround."
+      },
+      "probabilities": {
+        "0": 0.03,
+        "1": 0.83,
+        "2": 0.15
+      },
+      "confidence": 0.83
+    }
+  },
+  "usage": {
+    "total_input_tokens": 164,
+    "input_tokens_by_modality": [
+      { "modality": "text", "tokens": 164 }
+    ],
+    "total_output_tokens": 0,
+    "total_tokens": 164
+  }
+}

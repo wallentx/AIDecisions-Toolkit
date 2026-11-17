@@ -58,6 +58,19 @@ request behavior. Attempt selection and log processing remain CI-specific; no
 tool imports another. The pull-request delta comparison lives in
 `internal/prdelta`, which `AID.pr-delta` and `AID.review-queue` both call.
 
+## Adding a Decisions provider adapter
+
+`internal/decisions` owns canonical `Request`, `Question`, and `Answer` types,
+the `Evaluator` interface, bounded `net/http` transport, and native provider
+adapters (`openai.go`, `typesafe.go`, `gemini.go`, and `litellm.go`). To add
+another Decisions provider:
+
+1. Verify the provider's official wire endpoint, authentication header, request schema, response schema, refusal or safety-error behavior, and question/level limits.
+2. Add a `Provider` constant in `internal/decisions/types.go` and register its `ProviderInfo` (`DefaultModel`, `DefaultEndpoint`, `APIKeyEnv`) in `providerRegistry` and `adapterFor` inside `internal/decisions/client.go`.
+3. Implement `providerAdapter` (`preview` and `decide`) in `internal/decisions/<provider>.go`, translating canonical `predicate`, `choice`, and `score` questions into the native wire format, returning `*UnsupportedError` for unsupported capabilities, and using `postJSON` so timeouts, redirect refusal, 4 MiB response bounds, and credential redaction stay uniform.
+4. Add `providers.<id>` defaults in `internal/config/default.yml` only when needed; `internal/config` automatically validates registered providers and isolates `<APIKeyEnv>` and `providers.<id>.api_key_file` per provider.
+5. Add offline `httptest` coverage and `testdata/` fixtures in `internal/decisions/providers_test.go`, `internal/config/config_test.go`, and `tools/diff/cli_test.go`, then update the compatibility matrix in `docs/usage.md`.
+
 A manifest may declare an optional `collector` block (name, description, fixed
 `--json` arguments, `workspace_flag`, `ttl_seconds`, `timeout_seconds`). The
 stdio MCP server in `internal/mcp`, started with `AID --mcp`, runs only those

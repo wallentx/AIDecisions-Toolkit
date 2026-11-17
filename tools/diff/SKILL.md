@@ -10,25 +10,34 @@ a diff on stdin, a file with `--diff FILE`, or staged changes with `--staged`.
 
 ```sh
 {{AID_COMMAND}} --staged --json
+{{AID_COMMAND}} --provider gemini --model gemini-decision-1 --staged --json
+{{AID_COMMAND}} --provider typesafe --model jev-latest --staged --json
 git diff --no-ext-diff --no-textconv | {{AID_COMMAND}} --json
 {{AID_COMMAND}} --example --dry-run
 ```
 
-Live requests send the diff and optional `--context` to OpenAI. Use `--dry-run`
-to inspect the request without a key or network call. Credentials come from
-`OPENAI_API_KEY`, then the configured `api_key_file`; do not print the key or
-insert it into a prompt. Shared settings live in `~/.config/AID/config.yml`.
+Live requests send the diff and optional `--context` to the configured
+Decisions provider (`openai` by default, or `typesafe`, `gemini`, or `litellm`).
+Use `--dry-run` to inspect the resolved provider, endpoint, model, and
+translated wire payload without reading an API key or making a network call.
+
+Each provider reads its own environment variable (`OPENAI_API_KEY`,
+`TYPESAFE_API_KEY`, `GEMINI_API_KEY`, or `LITELLM_API_KEY`), then its isolated
+`api_key_file` in `~/.config/AID/config.yml` or `--api-key-file`. Keep secret
+keys out of prompts, command lines, and terminal output.
 
 For custom checks, pass `--checks FILE` with a JSON object mapping stable names
 to explicit yes/no questions. Include relevant behavior or compatibility
 constraints with `--context TEXT`.
 
 JSON results map each check name to an answer with `type`, `name`, and, for a
-predicate, `probability` between 0 and 1. A refusal is unanswered, never false.
-Use probabilities to prioritize the next concrete inspection or test. They are
-not proof that a change is correct and do not grant permission to merge, deploy,
-or modify anything. Calibrate thresholds against known examples before using
-them for unattended decisions.
+predicate, `probability` between 0 and 1 (plus `confidence` when returned by
+the provider). A refusal remains unanswered. Use probabilities to prioritize
+the next concrete inspection or test. Model probabilities do not prove that a
+change is correct and do not authorize merges, deployments, or edits. Calibrate
+thresholds against known examples before using them for unattended automation.
 
-Exit codes: `0` answered, `1` runtime/API failure, `2` invalid input, `3` at
-least one refusal. Preserve useful answers when exit code 3 is returned.
+The command returns exit code `0` when answered, `1` on runtime or API failure,
+`2` on invalid input or an unsupported provider capability, and `3` when at
+least one refusal occurs. Preserve useful answers when exit code `3` is
+returned.
