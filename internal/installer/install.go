@@ -62,6 +62,18 @@ func toolExecutable(tool catalog.Tool, executableDir string) string {
 	return path
 }
 
+func verifyLauncher(executableDir string) error {
+	path := launcherExecutable(executableDir)
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("required launcher %s is unavailable; build the complete AID suite first: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0) {
+		return fmt.Errorf("required launcher is not an executable file: %s", path)
+	}
+	return nil
+}
+
 func verifyExecutables(tools []catalog.Tool, executableDir string) error {
 	for _, tool := range tools {
 		path := toolExecutable(tool, executableDir)
@@ -126,6 +138,12 @@ func validateManifest(m manifest, ps []provider, _ []catalog.Tool) error {
 			return fmt.Errorf("installer state has an unexpected path %s; restore its original client directory before updating", r.Path)
 		}
 	}
+	for _, r := range m.MCP {
+		provider, known := allowed[r.Provider]
+		if !known || provider.MCPPath == "" || r.Path != provider.MCPPath {
+			return fmt.Errorf("installer state has an unexpected MCP config path %s; restore its original client directory before updating", r.Path)
+		}
+	}
 	return nil
 }
 
@@ -143,6 +161,11 @@ func makePlan(ps []provider, tools []catalog.Tool, desired map[string]bool, stat
 	for _, r := range m.Files {
 		owned[r.Path] = r
 	}
+	ownedMCP := map[string]mcpRecord{}
+	for _, r := range m.MCP {
+		ownedMCP[r.Path] = r
+	}
+
 	p := plan{StatePath: stateFile, StateBefore: original}
 	for _, provider := range ps {
 		install, manage := desired[provider.ID]
@@ -189,7 +212,12 @@ func makePlan(ps []provider, tools []catalog.Tool, desired map[string]bool, stat
 			}
 			p.Operations = append(p.Operations, op)
 		}
+
+		if err := planProviderMCP(provider, install, executableDir, ownedMCP, &p); err != nil {
+			return plan{}, err
+		}
 	}
+
 	currentTools := map[string]bool{}
 	for _, tool := range tools {
 		currentTools[tool.ID] = true
@@ -215,12 +243,22 @@ func makePlan(ps []provider, tools []catalog.Tool, desired map[string]bool, stat
 			p.Guards = append(p.Guards, operation{Path: path})
 		}
 	}
+
 	sort.Slice(p.Operations, func(i, j int) bool { return p.Operations[i].Path < p.Operations[j].Path })
-	updated := manifest{Version: 1, Files: make([]record, 0, len(owned))}
+	updated := manifest{
+		Version: 1,
+		Files:   make([]record, 0, len(owned)),
+		MCP:     make([]mcpRecord, 0, len(ownedMCP)),
+	}
 	for _, r := range owned {
 		updated.Files = append(updated.Files, r)
 	}
 	sort.Slice(updated.Files, func(i, j int) bool { return updated.Files[i].Path < updated.Files[j].Path })
+	for _, r := range ownedMCP {
+		updated.MCP = append(updated.MCP, r)
+	}
+	sort.Slice(updated.MCP, func(i, j int) bool { return updated.MCP[i].Path < updated.MCP[j].Path })
+
 	p.StateAfter, err = json.MarshalIndent(updated, "", "  ")
 	if err != nil {
 		return plan{}, err
@@ -229,12 +267,99 @@ func makePlan(ps []provider, tools []catalog.Tool, desired map[string]bool, stat
 	return p, nil
 }
 
+func planProviderMCP(
+	provider provider,
+	install bool,
+	executableDir string,
+	ownedMCP map[string]mcpRecord,
+	p *plan,
+) error {
+	if provider.MCPPath == "" || provider.MCPFormat == mcpNone {
+		return nil
+	}
+	path := provider.MCPPath
+	old, managed := ownedMCP[path]
+	if !install && !managed {
+		return nil
+	}
+
+	before, mode, exists, err := readRegular(path)
+	if err != nil {
+		return err
+	}
+	op := operation{
+		Path:       path,
+		Label:      provider.Name + " / mcp (" + aidMCPServerName + ")",
+		Before:     before,
+		BeforeMode: mode,
+		Existed:    exists,
+	}
+
+	var existingCanon []byte
+	var entryFound bool
+	if exists {
+		existingCanon, entryFound, err = inspectMCPEntry(provider, before)
+		if err != nil {
+			return err
+		}
+	}
+
+	if !install {
+		delete(ownedMCP, path)
+		if !exists || !entryFound {
+			p.Guards = append(p.Guards, op)
+			return nil
+		}
+		if digest(existingCanon) != old.SHA256 {
+			return fmt.Errorf("managed MCP server %q in %s was edited; preserve your edits before removing", aidMCPServerName, path)
+		}
+		after, err := removeMCPEntry(provider, before)
+		if err != nil {
+			return err
+		}
+		op.Content = after
+		op.Action = "remove"
+		p.Operations = append(p.Operations, op)
+		return nil
+	}
+
+	after, desiredCanon, err := upsertMCPEntry(provider, before, exists, executableDir)
+	if err != nil {
+		return err
+	}
+	desiredDigest := digest(desiredCanon)
+
+	if entryFound {
+		existingDigest := digest(existingCanon)
+		if existingDigest == desiredDigest {
+			ownedMCP[path] = mcpRecord{Provider: provider.ID, Path: path, SHA256: desiredDigest}
+			p.Guards = append(p.Guards, op)
+			return nil
+		}
+		if managed && existingDigest != old.SHA256 {
+			return fmt.Errorf("managed MCP server %q in %s was edited; preserve your edits before reinstalling", aidMCPServerName, path)
+		}
+		if !managed {
+			return fmt.Errorf("unmanaged MCP server %q already exists in %s; remove or rename it before installing AID", aidMCPServerName, path)
+		}
+	}
+
+	ownedMCP[path] = mcpRecord{Provider: provider.ID, Path: path, SHA256: desiredDigest}
+	op.Content = after
+	op.Action = "install"
+	if exists {
+		op.Action = "update"
+	}
+	p.Operations = append(p.Operations, op)
+	return nil
+}
+
 func showPlan(out io.Writer, p plan) {
 	for _, op := range p.Operations {
 		fmt.Fprintf(out, "%s  %s\n", op.Action, op.Path)
 	}
 	if len(p.Operations) == 0 {
-		fmt.Fprintln(out, "Skills already match the selection.")
+		fmt.Fprintln(out, "Skills and MCP configuration already match the selection.")
 	}
 }
 
@@ -332,7 +457,7 @@ func (p plan) apply() error {
 	if !bytes.Equal(p.StateBefore, p.StateAfter) {
 		ops = append(ops, operation{Path: p.StatePath, Content: p.StateAfter, Before: stateBefore, BeforeMode: stateMode, Existed: stateExists})
 	}
-	// Preflight every file before touching the first skill.
+	// Preflight every file before touching the first skill or MCP config.
 	for _, op := range p.Guards {
 		if err := verifyUnchanged(op); err != nil {
 			return err
@@ -349,7 +474,11 @@ func (p plan) apply() error {
 			op := applied[i]
 			var err error
 			if op.Existed {
-				err = atomicWrite(op.Path, op.Before, op.BeforeMode)
+				mode := os.FileMode(0600)
+				if op.BeforeMode != 0 {
+					mode = op.BeforeMode
+				}
+				err = atomicWrite(op.Path, op.Before, mode)
 			} else {
 				err = os.Remove(op.Path)
 				if errors.Is(err, os.ErrNotExist) {
@@ -379,7 +508,11 @@ func (p plan) apply() error {
 		if op.Remove {
 			err = os.Remove(op.Path)
 		} else {
-			err = atomicWrite(op.Path, op.Content, 0600)
+			mode := os.FileMode(0600)
+			if op.Existed && op.BeforeMode != 0 {
+				mode = op.BeforeMode
+			}
+			err = atomicWrite(op.Path, op.Content, mode)
 		}
 		if err != nil {
 			return rollback(fmt.Errorf("apply %s: %w", op.Path, err))

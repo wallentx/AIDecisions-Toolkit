@@ -32,7 +32,7 @@ Usage: AID ACTION [options]
   -b, --build    Print the agent-driven new-tool intake template
   -v, --version Show suite and individual executable versions
   -l, --list    List tools and their descriptions
-  -i, --init    Install/manage agent skills in a provider picker
+  -i, --init    Install/manage agent skills and MCP in a provider picker
   -u, --update  Fetch the latest GitHub release and build it locally
       --mcp     Serve tool collectors to an MCP client over stdio
   -h, --help    Show this help

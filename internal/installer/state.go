@@ -19,9 +19,16 @@ type record struct {
 	SHA256   string `json:"sha256"`
 }
 
+type mcpRecord struct {
+	Provider string `json:"provider"`
+	Path     string `json:"path"`
+	SHA256   string `json:"sha256"`
+}
+
 type manifest struct {
-	Version int      `json:"version"`
-	Files   []record `json:"files"`
+	Version int         `json:"version"`
+	Files   []record    `json:"files"`
+	MCP     []mcpRecord `json:"mcp,omitempty"`
 }
 
 func digest(data []byte) string {
@@ -103,6 +110,16 @@ func readManifest(path string) (manifest, []byte, error) {
 			return m, nil, fmt.Errorf("invalid installer digest for %s", r.Path)
 		}
 		seen[r.Path] = true
+	}
+	seenMCP := map[string]bool{}
+	for _, r := range m.MCP {
+		if seenMCP[r.Path] || seen[r.Path] || len(r.SHA256) != 64 {
+			return m, nil, fmt.Errorf("invalid installer MCP record for %s", r.Path)
+		}
+		if _, err := hex.DecodeString(r.SHA256); err != nil {
+			return m, nil, fmt.Errorf("invalid installer MCP digest for %s", r.Path)
+		}
+		seenMCP[r.Path] = true
 	}
 	return m, data, nil
 }

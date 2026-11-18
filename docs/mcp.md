@@ -15,11 +15,15 @@ client --(MCP stdio)--> AID --mcp --(exec, --json)--> AID.<tool> collectors
 
 ## Launch
 
-`AID --mcp` runs a stdio MCP server. It follows the launcher's existing
-`--build` / `--list` flag style. Example client configuration:
+`AID --mcp` runs a stdio MCP server. Running `AID --init` automatically
+registers the `aid` server (bound to the absolute installed `AID` executable
+path) alongside the per-tool `SKILL.md` files for every selected client (Codex,
+Claude Code, Cursor, Gemini CLI, Antigravity, OpenCode, and GitHub Copilot),
+while preserving unrelated settings and foreign MCP servers. Manual client
+configuration uses the same arguments:
 
 ```json
-{"mcpServers": {"aid": {"command": "AID", "args": ["--mcp"]}}}
+{"mcpServers": {"aid": {"command": "/path/to/AID", "args": ["--mcp"]}}}
 ```
 
 The server speaks MCP's JSON-RPC over stdio with a small hand-written

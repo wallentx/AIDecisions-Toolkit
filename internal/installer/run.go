@@ -43,10 +43,10 @@ func RunWithResult(args []string, stdin *os.File, stdout, stderr io.Writer) (int
 	flags.Var(&selected, "provider", "client to manage (repeatable or comma-separated)")
 	flags.BoolVar(&dryRun, "dry-run", false, "preview the selected changes without writing files")
 	flags.BoolVar(&list, "list", false, "show agent clients, detection, and install state")
-	flags.BoolVar(&remove, "remove", false, "remove managed skills from explicitly named providers")
+	flags.BoolVar(&remove, "remove", false, "remove managed skills and MCP configuration from explicitly named providers")
 	flags.BoolVar(&yes, "yes", false, "apply explicit --provider selections (already noninteractive)")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: AID --init [--provider codex] [--dry-run|--remove]\n\nWithout flags, open the agent-client installer TUI.\nExplicit providers apply only to the named clients; other clients are unchanged.")
+		fmt.Fprintln(stderr, "Usage: AID --init [--provider codex] [--dry-run|--remove]\n\nWithout flags, open the agent-client installer TUI to configure skills and MCP.\nExplicit providers apply only to the named clients; other clients are unchanged.")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -89,6 +89,11 @@ func RunWithResult(args []string, stdin *os.File, stdout, stderr io.Writer) (int
 	}
 	for i := range ps {
 		for _, r := range m.Files {
+			if r.Provider == ps[i].ID {
+				ps[i].Installed = true
+			}
+		}
+		for _, r := range m.MCP {
 			if r.Provider == ps[i].ID {
 				ps[i].Installed = true
 			}
@@ -144,12 +149,15 @@ func RunWithResult(args []string, stdin *os.File, stdout, stderr io.Writer) (int
 			if err := verifyExecutables(tools, executableDir); err != nil {
 				return fail(err)
 			}
+			if err := verifyLauncher(executableDir); err != nil {
+				return fail(err)
+			}
 		}
 		if err := p.apply(); err != nil {
 			return fail(err)
 		}
 		showPlan(stdout, p)
-		fmt.Fprintln(stdout, "Agent skills are ready. Restart an existing agent session to load them.")
+		fmt.Fprintln(stdout, "Agent skills and MCP configuration are ready. Restart an existing agent session to load them.")
 		return 0, true
 	}
 	p, err := makePlan(ps, tools, desired, stateFile, executableDir)
@@ -165,11 +173,14 @@ func RunWithResult(args []string, stdin *os.File, stdout, stderr io.Writer) (int
 		if err := verifyExecutables(tools, executableDir); err != nil {
 			return fail(err)
 		}
+		if err := verifyLauncher(executableDir); err != nil {
+			return fail(err)
+		}
 	}
 	if err := p.apply(); err != nil {
 		return fail(err)
 	}
-	fmt.Fprintln(stdout, "Agent skills updated.")
+	fmt.Fprintln(stdout, "Agent skills and MCP configuration updated.")
 	return 0, true
 }
 

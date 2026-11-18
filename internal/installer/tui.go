@@ -169,7 +169,7 @@ func (s *screen) render(out io.Writer, width, height int) bool {
 	line(strings.Repeat("-", width-1))
 	fits := true
 	if !s.Review {
-		line("Select clients that should have AID skills.")
+		line("Select clients that should have AID skills and MCP.")
 		line("Unchecked installed clients: remove.")
 		line("")
 		visible := max(1, height-12)
@@ -212,7 +212,7 @@ func (s *screen) render(out io.Writer, width, height int) bool {
 			}
 		}
 		if len(s.Plan.Operations) == 0 {
-			line("Skills already match the selection.")
+			line("Skills and MCP already match the selection.")
 		}
 		line("")
 		if s.Apply {
