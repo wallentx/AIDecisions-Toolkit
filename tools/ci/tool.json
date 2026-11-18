@@ -1,7 +1,7 @@
 {
   "id": "ci",
   "command": "AID.ci",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Collect bounded, attempt-pinned GitHub Actions failure evidence with redacted log excerpts.",
   "package": "./cmd/AID.ci"
 }

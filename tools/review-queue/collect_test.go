@@ -350,7 +350,7 @@ func TestCLIVersion(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	var info map[string]string
-	if json.Unmarshal(out.Bytes(), &info) != nil || info["command"] != "AID.review-queue" || info["tool_version"] != "0.1.0" {
+	if json.Unmarshal(out.Bytes(), &info) != nil || info["command"] != "AID.review-queue" || info["tool_version"] != "0.1.1" {
 		t.Errorf("version = %s", &out)
 	}
 }

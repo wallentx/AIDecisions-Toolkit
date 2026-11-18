@@ -71,7 +71,7 @@ func TestCollectSyntheticGlibcAbsentAndUnchecked(t *testing.T) {
 	if report.ELF.Interpreter != interpreter || report.ELF.InterpreterObservation != "missing" || report.ELF.Type != "shared_object" {
 		t.Fatalf("unexpected ELF facts: %+v", report.ELF)
 	}
-	if report.Provenance.Parser.Name != "go/debug/elf" || report.Provenance.Parser.ToolVersion != "0.1.0" {
+	if report.Provenance.Parser.Name != "go/debug/elf" || report.Provenance.Parser.ToolVersion != "0.1.1" {
 		t.Fatalf("unexpected parser provenance: %+v", report.Provenance.Parser)
 	}
 	withoutManifest, err := Collect(context.Background(), target, nil, Options{})

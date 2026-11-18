@@ -14,7 +14,7 @@ func renderFixture() Snapshot {
 	for _, name := range []string{SourcePullRequest, SourceFiles, SourceChecks, SourceStatuses, SourceReviewThreads, SourceIssueComments, SourceReviews, SourceFreshness} {
 		sources[name] = evidence.Source{Complete: true, CapturedAt: "2026-10-13T00:00:00Z"}
 	}
-	return Snapshot{SchemaVersion: 1, Complete: true, Sources: sources, PullRequest: Metadata{Title: "Example", Body: "A short description"}}
+	return Snapshot{SchemaVersion: 1, Complete: true, Sources: sources, PullRequest: Metadata{Title: "Example", Body: "A short description", Head: Branch{SHA: "head"}, Author: Actor{Login: "author", Type: "User"}}}
 }
 
 func readRendered(t *testing.T, data []byte) map[string]any {

@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,8 +16,25 @@ import (
 	assets "aid"
 	"aid/internal/bounded"
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":           {Min: 0, Max: 3600, OpenMin: true},
+	"days":              {Min: 1, Max: 36500},
+	"offset":            {Min: 0, NoMax: true},
+	"page-size":         {Min: 1, Max: 100},
+	"min-sessions":      {Min: 1, NoMax: true},
+	"text-offset":       {Min: 0, NoMax: true},
+	"text-limit":        {Min: 1, Max: 12000},
+	"max-output-bytes":  {Min: 4096, Max: 1048576},
+	"cache-ttl":         {Min: 0, NoMax: true},
+	"cache_ttl_seconds": {Min: 0, Max: 86400},
+	"max_input_bytes":   {Min: 1024, Max: 67108864},
+	"max_records":       {Min: 1, Max: 1000000},
+	"max_record_bytes":  {Min: 256, Max: 1048576},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -78,6 +94,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	dryRun := flags.Bool("dry-run", false, "preview source options without scanning or writing cache")
 	showVersion := flags.Bool("version", false, "print tool and suite release versions")
 	flags.Bool("json", true, "JSON output (always enabled for evidence)")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.discover [--all-projects] [--days 365]\n       AID.discover --snapshot ID --evidence GROUP_OR_RECORD_ID\n\nPrepare bounded evidence for the current agent; no model call or API key.\nHistory is read through Reflect or an explicit normalized JSON input.")
 		flags.PrintDefaults()
@@ -130,8 +147,18 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !visited["max-output-bytes"] {
 		*maxOutput = opts.MaxOutputBytes
 	}
-	if math.IsNaN(opts.CacheTTLSeconds) || math.IsInf(opts.CacheTTLSeconds, 0) || opts.CacheTTLSeconds < 0 || opts.CacheTTLSeconds > 86400 {
-		return cliError(stderr, 2, "cache_ttl_seconds must be 0..86400")
+	for _, bound := range []struct {
+		key   string
+		value float64
+	}{
+		{"cache_ttl_seconds", opts.CacheTTLSeconds},
+		{"max_input_bytes", float64(opts.MaxInputBytes)},
+		{"max_records", float64(opts.MaxRecords)},
+		{"max_record_bytes", float64(opts.MaxRecordBytes)},
+	} {
+		if err := cliLimits[bound.key].Check(fmt.Sprintf("tools.discover.%s in %q", bound.key, cfg.Path), bound.value); err != nil {
+			return cliError(stderr, 2, err.Error())
+		}
 	}
 	if !visited["cache-ttl"] {
 		*cacheTTL = time.Duration(opts.CacheTTLSeconds * float64(time.Second))
@@ -139,8 +166,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !visited["timeout"] {
 		*timeout = common.TimeoutSeconds
 	}
-	if *days < 1 || *days > 36500 || *offset < 0 || *pageSize < 1 || *pageSize > 100 || *minSessions < 1 || *textOffset < 0 || *textLimit < 1 || *textLimit > 12000 || *maxOutput < 4096 || *maxOutput > 1<<20 || *cacheTTL < 0 || math.IsNaN(*timeout) || math.IsInf(*timeout, 0) || *timeout <= 0 || *timeout > 3600 || opts.MaxInputBytes < 1024 || opts.MaxInputBytes > 64<<20 || opts.MaxRecords < 1 || opts.MaxRecords > 1000000 || opts.MaxRecordBytes < 256 || opts.MaxRecordBytes > 1<<20 {
-		return cliError(stderr, 2, "invalid limit: use --help for supported arguments; output budget must be 4096..1048576 bytes")
+	if err := cliLimits.Validate(flags); err != nil {
+		return cliError(stderr, 2, err.Error())
 	}
 	if *evidence != "" && *allRecords {
 		return cliError(stderr, 2, "choose --evidence or --records")

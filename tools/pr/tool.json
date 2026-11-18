@@ -1,7 +1,7 @@
 {
   "id": "pr",
   "command": "AID.pr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Collect bounded GitHub pull request evidence with source completeness and freshness checks.",
   "package": "./cmd/AID.pr"
 }

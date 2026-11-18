@@ -20,6 +20,7 @@ const (
 	SourceIssueComments = "issue_comments"
 	SourceReviews       = "reviews"
 	SourceFreshness     = "freshness"
+	SourceOpenFindings  = "open_findings"
 )
 
 // API is the read-only GitHub transport used by Collect.
@@ -67,6 +68,7 @@ type Snapshot struct {
 	ReviewThreads []ReviewThread             `json:"review_threads"`
 	IssueComments []Comment                  `json:"issue_comments"`
 	Reviews       []Review                   `json:"reviews"`
+	OpenFindings  *OpenFindings              `json:"open_findings,omitempty"`
 }
 
 type Metadata struct {
@@ -102,6 +104,7 @@ type RepositoryIdentity struct {
 }
 
 type Actor struct {
+	Type   string `json:"type,omitempty"`
 	Login  string `json:"login"`
 	ID     int64  `json:"id,omitempty"`
 	NodeID string `json:"node_id,omitempty"`
@@ -199,6 +202,7 @@ type ReviewThread struct {
 }
 
 type Comment struct {
+	ReviewNodeID      string     `json:"review_node_id,omitempty"`
 	ID                int64      `json:"id,omitempty"`
 	FullDatabaseID    string     `json:"full_database_id,omitempty"`
 	NodeID            string     `json:"node_id,omitempty"`

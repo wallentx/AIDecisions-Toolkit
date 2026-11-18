@@ -8,18 +8,38 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 	"aid/internal/github"
 
 	"golang.org/x/term"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":             {Min: 0, Max: 3600, OpenMin: true},
+	"page-size":           {Min: 1, Max: 100},
+	"max-pages":           {Min: 1, Max: 20},
+	"max-jobs":            {Min: 1, Max: 500},
+	"max-log-jobs":        {Min: 1, Max: 20},
+	"max-requests":        {Min: 2, Max: 200},
+	"max-retained-bytes":  {Min: 4096, Max: 16777216},
+	"max-annotations":     {Min: 1, Max: 500},
+	"max-artifacts":       {Min: 1, Max: 500},
+	"max-log-bytes":       {Min: 4096, Max: 16777216},
+	"max-response-bytes":  {Min: 4096, Max: 33554432},
+	"max-excerpts":        {Min: 1, Max: 5},
+	"context-lines":       {Min: 0, Max: 3},
+	"max-excerpt-lines":   {Min: 1, Max: 60},
+	"max-line-characters": {Min: 1, Max: 2000},
+	"max-log-lines":       {Min: 1, Max: 100000},
+	"max-output-bytes":    {Min: 4096, Max: 16777216},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -93,26 +113,27 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client, git
 	gh := flags.String("gh", initial.GH, "GitHub CLI executable")
 	configPath := flags.String("config", "", "AID YAML configuration path")
 	timeout := flags.Float64("timeout", 120, "total collection timeout in seconds; supports global/tool config")
-	pageSize := flags.Int("page-size", initial.PageSize, "items requested per API page (1-100)")
-	maxPages := flags.Int("max-pages", initial.MaxPages, "maximum pages per source (1-20)")
-	maxJobs := flags.Int("max-jobs", initial.MaxJobs, "maximum jobs retained and checked (1-500)")
-	maxLogJobs := flags.Int("max-log-jobs", initial.MaxLogJobs, "maximum diagnostic job logs fetched (1-20)")
-	maxRequests := flags.Int("max-requests", initial.MaxRequests, "maximum GitHub API requests (2-200)")
-	maxRetained := flags.Int("max-retained-bytes", initial.MaxRetainedBytes, "maximum normalized evidence retained (up to 16 MiB)")
-	maxAnnotations := flags.Int("max-annotations", initial.MaxAnnotations, "maximum check-run annotations (1-500)")
-	maxArtifacts := flags.Int("max-artifacts", initial.MaxArtifacts, "maximum run-wide artifact records (1-500)")
-	maxLogBytes := flags.Int("max-log-bytes", initial.MaxLogBytes, "maximum prefix fetched per job log (up to 16 MiB)")
-	maxResponseBytes := flags.Int64("max-response-bytes", initial.MaxResponseBytes, "maximum bytes per metadata API response (4 KiB-32 MiB)")
-	maxExcerpts := flags.Int("max-excerpts", initial.MaxExcerpts, "maximum selected excerpts per job (1-5)")
-	contextLines := flags.Int("context-lines", initial.ContextLines, "context lines around a selected marker (0-3)")
-	maxExcerptLines := flags.Int("max-excerpt-lines", initial.MaxExcerptLines, "maximum lines per excerpt (1-60)")
-	maxLineCharacters := flags.Int("max-line-characters", initial.MaxLineCharacters, "maximum Unicode characters per returned log line (1-2000)")
-	maxLogLines := flags.Int("max-log-lines", initial.MaxLogLines, "maximum lines processed per job log (1-100000)")
-	maxOutput := flags.Int("max-output-bytes", initial.MaxOutputBytes, "maximum encoded JSON result bytes (4 KiB-16 MiB)")
+	pageSize := flags.Int("page-size", initial.PageSize, "items requested per API page")
+	maxPages := flags.Int("max-pages", initial.MaxPages, "maximum pages per source")
+	maxJobs := flags.Int("max-jobs", initial.MaxJobs, "maximum jobs retained and checked")
+	maxLogJobs := flags.Int("max-log-jobs", initial.MaxLogJobs, "maximum diagnostic job logs fetched")
+	maxRequests := flags.Int("max-requests", initial.MaxRequests, "maximum GitHub API requests")
+	maxRetained := flags.Int("max-retained-bytes", initial.MaxRetainedBytes, "maximum normalized evidence retained")
+	maxAnnotations := flags.Int("max-annotations", initial.MaxAnnotations, "maximum check-run annotations")
+	maxArtifacts := flags.Int("max-artifacts", initial.MaxArtifacts, "maximum run-wide artifact records")
+	maxLogBytes := flags.Int("max-log-bytes", initial.MaxLogBytes, "maximum prefix fetched per job log")
+	maxResponseBytes := flags.Int64("max-response-bytes", initial.MaxResponseBytes, "maximum bytes per metadata API response")
+	maxExcerpts := flags.Int("max-excerpts", initial.MaxExcerpts, "maximum selected excerpts per job")
+	contextLines := flags.Int("context-lines", initial.ContextLines, "context lines around a selected marker")
+	maxExcerptLines := flags.Int("max-excerpt-lines", initial.MaxExcerptLines, "maximum lines per excerpt")
+	maxLineCharacters := flags.Int("max-line-characters", initial.MaxLineCharacters, "maximum Unicode characters per returned log line")
+	maxLogLines := flags.Int("max-log-lines", initial.MaxLogLines, "maximum lines processed per job log")
+	maxOutput := flags.Int("max-output-bytes", initial.MaxOutputBytes, "maximum encoded JSON result bytes")
 	dryRun := flags.Bool("dry-run", false, "validate and preview without running gh or contacting GitHub")
 	showVersion := flags.Bool("version", false, "print tool and suite versions")
 	jsonOutput := flags.Bool("json", false, "emit JSON evidence")
 	textOutput := flags.Bool("text", false, "emit a readable status summary")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.ci [options] https://github.com/OWNER/REPO/actions/runs/RUN[/attempts/N|/job/JOB]\n       AID.ci --repo OWNER/REPO --run RUN [--attempt N] [options]\n\nCollect bounded, read-only GitHub Actions evidence using gh authentication. No model call.\nExit 0: complete declared scope; 3: partial/capped/changed/ongoing; 2: usage; 1: fatal/output error.")
 		flags.PrintDefaults()
@@ -182,15 +203,10 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client, git
 			*pair.destination = pair.value
 		}
 	}
-	if err := validateCLISettings(*gh, *timeout, settings{
-		PageSize: *pageSize, MaxPages: *maxPages, MaxJobs: *maxJobs, MaxLogJobs: *maxLogJobs,
-		MaxRequests: *maxRequests, MaxRetainedBytes: *maxRetained, MaxAnnotations: *maxAnnotations,
-		MaxArtifacts: *maxArtifacts, MaxLogBytes: *maxLogBytes, MaxExcerpts: *maxExcerpts,
-		MaxResponseBytes: *maxResponseBytes,
-		ContextLines:     *contextLines, MaxExcerptLines: *maxExcerptLines,
-		MaxLineCharacters: *maxLineCharacters, MaxOutputBytes: *maxOutput,
-		MaxLogLines: *maxLogLines,
-	}); err != nil {
+	if *gh == "" {
+		return cliError(stderr, 2, "--gh must be set")
+	}
+	if err := cliLimits.Validate(flags); err != nil {
 		return cliError(stderr, 2, err.Error())
 	}
 
@@ -273,29 +289,6 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client, git
 		return 0
 	}
 	return 3
-}
-
-func validateCLISettings(gh string, timeout float64, configured settings) error {
-	if gh == "" || math.IsNaN(timeout) || math.IsInf(timeout, 0) || timeout <= 0 || timeout > 3600 {
-		return errors.New("gh must be set and timeout must be greater than 0 and at most 3600 seconds")
-	}
-	if configured.PageSize < 1 || configured.PageSize > 100 || configured.MaxPages < 1 || configured.MaxPages > 20 ||
-		configured.MaxJobs < 1 || configured.MaxJobs > 500 || configured.MaxLogJobs < 1 || configured.MaxLogJobs > 20 ||
-		configured.MaxRequests < 2 || configured.MaxRequests > 200 {
-		return errors.New("invalid page, job, log-job, or request limit")
-	}
-	if configured.MaxRetainedBytes < 4096 || configured.MaxRetainedBytes > 16<<20 ||
-		configured.MaxAnnotations < 1 || configured.MaxAnnotations > 500 || configured.MaxArtifacts < 1 || configured.MaxArtifacts > 500 ||
-		configured.MaxLogBytes < 4096 || configured.MaxLogBytes > 16<<20 || configured.MaxExcerpts < 1 || configured.MaxExcerpts > 5 ||
-		configured.ContextLines < 0 || configured.ContextLines > 3 || configured.MaxExcerptLines < 1 || configured.MaxExcerptLines > 60 ||
-		configured.MaxLineCharacters < 1 || configured.MaxLineCharacters > 2000 || configured.MaxLogLines < 1 || configured.MaxLogLines > 100000 ||
-		configured.MaxOutputBytes < 4096 || configured.MaxOutputBytes > 16<<20 {
-		return errors.New("invalid retention, annotation, artifact, log, excerpt, line, or output limit")
-	}
-	if configured.MaxResponseBytes < 4096 || configured.MaxResponseBytes > 32<<20 {
-		return errors.New("invalid metadata response limit")
-	}
-	return nil
 }
 
 func cliError(writer io.Writer, code int, message string) int {

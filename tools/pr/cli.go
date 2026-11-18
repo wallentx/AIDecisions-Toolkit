@@ -8,18 +8,31 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 	"aid/internal/github"
 
 	"golang.org/x/term"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":            {Min: 0, Max: 3600, OpenMin: true},
+	"page-size":          {Min: 1, Max: 100},
+	"max-pages":          {Min: 1, Max: 1000},
+	"max-items":          {Min: 1, Max: 100000},
+	"max-comments":       {Min: 1, Max: 100000},
+	"max-requests":       {Min: 2, Max: 10000},
+	"max-retained-bytes": {Min: 4096, Max: 67108864},
+	"max-response-bytes": {Min: 4096, Max: 33554432},
+	"max-output-bytes":   {Min: 4096, Max: 16777216},
+	"text-limit":         {Min: 0, Max: 1048576},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -63,7 +76,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	gh := flags.String("gh", initial.GH, "GitHub CLI executable")
 	configPath := flags.String("config", "", "AID YAML configuration path")
 	timeout := flags.Float64("timeout", 120, "total collection timeout in seconds; supports global/tool config")
-	pageSize := flags.Int("page-size", initial.PageSize, "items requested per API page (1-100)")
+	pageSize := flags.Int("page-size", initial.PageSize, "items requested per API page")
 	maxPages := flags.Int("max-pages", initial.MaxPages, "maximum pages per collection")
 	maxItems := flags.Int("max-items", initial.MaxItems, "maximum items per collection")
 	maxComments := flags.Int("max-comments", initial.MaxComments, "maximum review-thread comments in total")
@@ -76,6 +89,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	showVersion := flags.Bool("version", false, "print tool and suite versions")
 	jsonOutput := flags.Bool("json", false, "emit JSON evidence")
 	textOutput := flags.Bool("text", false, "emit a readable status summary")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.pr [options] https://github.com/OWNER/REPO/pull/NUMBER\n       AID.pr --repo OWNER/REPO --pr NUMBER [options]\n\nCollect read-only evidence using gh authentication. No model call.\nExit 0: complete; 3: incomplete/capped/changed; 2: usage; 1: fatal error.")
 		flags.PrintDefaults()
@@ -140,14 +154,11 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if !visited["max-response-bytes"] {
 		*maxResponse = configured.MaxResponseBytes
 	}
-	if *gh == "" || math.IsNaN(*timeout) || math.IsInf(*timeout, 0) || *timeout <= 0 || *timeout > 3600 {
-		return cliError(stderr, 2, "gh must be set and timeout must be greater than 0 and at most 3600 seconds")
+	if *gh == "" {
+		return cliError(stderr, 2, "--gh must be set")
 	}
-	if *pageSize < 1 || *pageSize > 100 || *maxPages < 1 || *maxPages > 1000 || *maxItems < 1 || *maxItems > 100000 || *maxComments < 1 || *maxComments > 100000 || *maxRequests < 2 || *maxRequests > 10000 {
-		return cliError(stderr, 2, "invalid page, item, comment, or request limit")
-	}
-	if *maxRetained < 4096 || *maxRetained > 64<<20 || *maxResponse < 4096 || *maxResponse > 32<<20 || *maxOutput < 4096 || *maxOutput > 16<<20 || *textLimit < 0 || *textLimit > 1<<20 {
-		return cliError(stderr, 2, "invalid retention, response, output, or text limit")
+	if err := cliLimits.Validate(flags); err != nil {
+		return cliError(stderr, 2, err.Error())
 	}
 	var raw string
 	if flags.NArg() == 1 {

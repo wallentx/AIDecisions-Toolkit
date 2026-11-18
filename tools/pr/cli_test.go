@@ -52,7 +52,7 @@ func TestCLIVersionDoesNotLoadConfiguration(t *testing.T) {
 		t.Fatalf("version exit = %d, stderr = %s", code, &errs)
 	}
 	result := readRendered(t, out.Bytes())
-	if result["command"] != "AID.pr" || result["tool_version"] != "0.1.0" {
+	if result["command"] != "AID.pr" || result["tool_version"] != "0.2.0" {
 		t.Errorf("version = %#v", result)
 	}
 }

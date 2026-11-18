@@ -1,7 +1,7 @@
 {
   "id": "runtime",
   "command": "AID.runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Collect bounded static AArch64 ELF and opt-in host path facts without executing the target.",
   "package": "./cmd/AID.runtime"
 }
