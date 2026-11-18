@@ -86,7 +86,7 @@ func TestJSONMCPInstallUpdatePreserveForeignDataAndRemove(t *testing.T) {
 	if !strings.Contains(claudeAfter, "9007199254740993") || !strings.Contains(claudeAfter, `"panoptes"`) {
 		t.Fatalf("foreign keys or large integer lost in .claude.json:\n%s", claudeAfter)
 	}
-	if !strings.Contains(claudeAfter, launcherExecutable(bin1)) || !strings.Contains(claudeAfter, `"--mcp"`) {
+	if !strings.Contains(claudeAfter, quoteJSON(launcherExecutable(bin1))) || !strings.Contains(claudeAfter, `"--mcp"`) {
 		t.Fatalf("aid MCP server missing from .claude.json:\n%s", claudeAfter)
 	}
 	if runtime.GOOS != "windows" {
@@ -128,7 +128,7 @@ func TestJSONMCPInstallUpdatePreserveForeignDataAndRemove(t *testing.T) {
 	}
 	apply(t, pUpdate)
 	claudeUpdated := string(read(t, claudeConfig))
-	if !strings.Contains(claudeUpdated, `"numStartups": 42`) || !strings.Contains(claudeUpdated, launcherExecutable(bin2)) || strings.Contains(claudeUpdated, launcherExecutable(bin1)) {
+	if !strings.Contains(claudeUpdated, `"numStartups": 42`) || !strings.Contains(claudeUpdated, quoteJSON(launcherExecutable(bin2))) || strings.Contains(claudeUpdated, quoteJSON(launcherExecutable(bin1))) {
 		t.Fatalf("MCP binary path not updated cleanly:\n%s", claudeUpdated)
 	}
 
@@ -175,7 +175,7 @@ trust_level = "trusted"
 	}
 	apply(t, p)
 	installed := string(read(t, codexTOML))
-	if !strings.Contains(installed, "[mcp_servers.aid]") || !strings.Contains(installed, launcherExecutable(bin1)) {
+	if !strings.Contains(installed, "[mcp_servers.aid]") || !strings.Contains(installed, quoteJSON(launcherExecutable(bin1))) {
 		t.Fatalf("missing [mcp_servers.aid]:\n%s", installed)
 	}
 	if !strings.Contains(installed, "[mcp_servers.panoptes]") || !strings.Contains(installed, `[projects."/home/tester/src/repo#1"]`) {
@@ -189,7 +189,7 @@ trust_level = "trusted"
 	}
 	apply(t, p2)
 	updated := string(read(t, codexTOML))
-	if !strings.Contains(updated, launcherExecutable(bin2)) || strings.Contains(updated, launcherExecutable(bin1)) {
+	if !strings.Contains(updated, quoteJSON(launcherExecutable(bin2))) || strings.Contains(updated, quoteJSON(launcherExecutable(bin1))) {
 		t.Fatalf("failed to update [mcp_servers.aid] in place:\n%s", updated)
 	}
 
