@@ -65,7 +65,7 @@ under `internal/`. Do not add cross-tool dependencies to a tool package.
 
 Every executable's `--version --json` must return `command`, `tool_version`, and
 `release_version` using `internal/buildinfo`. Keep tool versions separate from
-the root `VERSION`, which identifies the tested suite release. Bump each tool
+the suite release tag, which identifies the tested suite release. Bump each tool
 whose observable contract or behavior changes, including changes caused by
 shared code. A release can contain unchanged tool versions.
 

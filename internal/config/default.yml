@@ -1,11 +1,28 @@
 version: 1
 
 global:
-  # OPENAI_API_KEY takes precedence. Store a path here, never a key.
+  provider: openai
+  # Provider env vars (OPENAI_API_KEY, TYPESAFE_API_KEY, GEMINI_API_KEY,
+  # OPENROUTER_API_KEY, LITELLM_API_KEY) take precedence over key files.
+  # Store a file path here, never a key.
   api_key_file: ""
   model: gpt-6-luna
   timeout_seconds: 30
   output: auto  # JSON for agents/pipes, readable text in a terminal
+
+providers:
+  openai:
+    api_key_file: ""
+  typesafe:
+    api_key_file: ""
+  gemini:
+    api_key_file: ""
+  openrouter:
+    api_key_file: ""
+  litellm:
+    api_key_file: ""
+    endpoint: ""
+    model: ""
 
 updates:
   repository: "wallentx/AIDecisions-Toolkit"  # GitHub release source
@@ -19,9 +36,9 @@ tools:
     provider: codex
     timeout_seconds: 120
     cache_ttl_seconds: 600
-    max_output_bytes: 32768
     page_size: 12
     min_sessions: 2
+    max_output_bytes: 32768
   pr:
     gh: gh
     hostname: github.com

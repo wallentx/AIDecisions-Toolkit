@@ -1,0 +1,47 @@
+{
+  "model": "jev-1.14.0",
+  "answers": {
+    "is_breaking": {
+      "type": "noul",
+      "noul": 0.92
+    },
+    "department": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+        "billing": 0.95,
+        "technical": 0.03,
+        "other": 0.02
+      },
+      "confidence": 0.93
+    },
+    "needs_human": {
+      "type": "choice",
+      "choice": "true",
+      "probabilities": {
+        "true": 0.88,
+        "false": 0.12
+      },
+      "confidence": 0.76
+    },
+    "severity": {
+      "type": "score",
+      "score": 1.1,
+      "legend": {
+        "0": "Cosmetic: Appearance only.",
+        "1": "Workaround available: Another path works.",
+        "2": "Fully blocked: No workaround."
+      },
+      "probabilities": {
+        "0": 0.1,
+        "1": 0.7,
+        "2": 0.2
+      },
+      "confidence": 0.55
+    }
+  },
+  "usage": {
+    "input_tokens": 140,
+    "output_tokens": 24
+  }
+}

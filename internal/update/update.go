@@ -31,7 +31,7 @@ type options struct {
 type dependencies struct {
 	latest    func(context.Context, string) (release, error)
 	checkout  func(context.Context, string, string, string, io.Writer) error
-	build     func(context.Context, string, string, io.Writer) error
+	build     func(context.Context, string, string, string, io.Writer) error
 	tools     func(string) ([]catalog.Tool, error)
 	installed func() ([]catalog.Tool, error)
 	replace   func(string, []artifact) error
@@ -45,7 +45,7 @@ func defaults() dependencies {
 		checkout: func(ctx context.Context, repository, tag, source string, output io.Writer) error {
 			return checkoutRelease(ctx, repository, tag, source, output, runCommand)
 		},
-		build:     builder.Build,
+		build:     builder.BuildRelease,
 		tools:     catalog.FromDirectory,
 		installed: catalog.All,
 		replace: func(directory string, artifacts []artifact) error {
@@ -178,18 +178,11 @@ func perform(ctx context.Context, opts options, deps dependencies, stdout, stder
 	if err != nil {
 		return err
 	}
-	version, err := os.ReadFile(filepath.Join(source, "VERSION"))
-	if err != nil {
-		return fmt.Errorf("read release VERSION: %w", err)
-	}
-	if strings.TrimSpace(string(version)) != strings.TrimPrefix(latest.TagName, "v") {
-		return fmt.Errorf("release tag %s does not match source VERSION %q", latest.TagName, strings.TrimSpace(string(version)))
-	}
 	tools, err := deps.tools(source)
 	if err != nil {
 		return err
 	}
-	if err := deps.build(ctx, source, stage, stderr); err != nil {
+	if err := deps.build(ctx, source, stage, latest.TagName, stderr); err != nil {
 		return err
 	}
 	artifacts := make([]artifact, 0, len(tools)+1)

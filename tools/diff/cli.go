@@ -7,12 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -39,14 +39,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, transport *ht
 	configFile := flags.String("config", "", "suite YAML config (default: ~/.config/AID/config.yml)")
 	checksFile := flags.String("checks", "", "JSON file mapping check names to questions")
 	contextText := flags.String("context", "", "additional evidence about the change")
-	model := flags.String("model", "", "Decisions model (default: configured model)")
-	dryRun := flags.Bool("dry-run", false, "print the request without an API call or key")
+	providerList := strings.Join(decisions.ProviderIDs(), ", ")
+	envList := strings.Join(decisions.ProviderEnvVars(), ", ")
+	providerFlag := flags.String("provider", "", "Decisions provider: "+providerList)
+	model := flags.String("model", "", "Decisions model (default: configured or provider default)")
+	endpoint := flags.String("endpoint", "", "override Decisions API endpoint URL")
+	apiKeyFile := flags.String("api-key-file", "", "file containing the selected provider's API key")
+	dryRun := flags.Bool("dry-run", false, "print the resolved provider target and wire request without an API call or key")
 	jsonOutput := flags.Bool("json", false, "print answers as JSON")
 	output := flags.String("output", "", "output format: auto, json, or text (table is an alias)")
 	timeout := flags.Float64("timeout", 30, "request deadline in seconds")
 	showVersion := flags.Bool("version", false, "print tool and suite release versions")
 	flags.Usage = func() {
-		fmt.Fprint(stderr, "Usage: AID.diff [options]\n\nEvaluate a diff using configurable Decisions API checks.\nLive requests send the diff and context to OpenAI; --dry-run previews locally.\nCredentials: OPENAI_API_KEY, then api_key_file in suite config.\nOutput defaults to JSON for pipes and agents, or a table in a terminal.\n\n")
+		fmt.Fprintf(stderr, "Usage: AID.diff [options]\n\nEvaluate a diff using configurable Decisions API checks.\nProviders: %s (default: %s).\nLive requests send the diff and context to the selected provider; --dry-run previews locally.\nCredentials: %s, then provider api_key_file in suite config.\nOutput defaults to JSON for pipes and agents, or a table in a terminal.\n\n", providerList, decisions.DefaultProvider, envList)
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -75,43 +80,47 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, transport *ht
 	if err != nil {
 		return fail(stderr, 2, err)
 	}
-	opts, err := cfg.Resolve("diff")
+	visited := make(map[string]bool)
+	flags.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+
+	var overrides config.Overrides
+	if visited["provider"] {
+		overrides.Provider = providerFlag
+	}
+	if visited["model"] {
+		overrides.Model = model
+	}
+	if visited["endpoint"] {
+		overrides.Endpoint = endpoint
+	}
+	if visited["api-key-file"] {
+		overrides.APIKeyFile = apiKeyFile
+	}
+	if visited["checks"] {
+		overrides.ChecksFile = checksFile
+	}
+	if visited["context"] {
+		overrides.Context = contextText
+	}
+	if visited["timeout"] {
+		overrides.TimeoutSeconds = timeout
+	}
+	if visited["output"] {
+		overrides.Output = output
+	}
+	if visited["json"] {
+		outFmt := "text"
+		if *jsonOutput {
+			outFmt = "json"
+		}
+		overrides.Output = &outFmt
+	}
+
+	opts, err := cfg.ResolveDecisions("diff", overrides)
 	if err != nil {
 		return fail(stderr, 2, err)
 	}
-	visited := make(map[string]bool)
-	flags.Visit(func(f *flag.Flag) { visited[f.Name] = true })
-	if visited["checks"] {
-		opts.ChecksFile = *checksFile
-	}
-	if visited["context"] {
-		opts.Context = *contextText
-	}
-	if visited["timeout"] {
-		opts.TimeoutSeconds = *timeout
-	}
-	if visited["model"] {
-		opts.Model = *model
-	}
-	if visited["output"] {
-		opts.Output = *output
-	}
-	if visited["json"] {
-		if *jsonOutput {
-			opts.Output = "json"
-		} else {
-			opts.Output = "text"
-		}
-	}
-	if math.IsNaN(opts.TimeoutSeconds) || math.IsInf(opts.TimeoutSeconds, 0) || opts.TimeoutSeconds <= 0 || opts.TimeoutSeconds > 3600 {
-		return fail(stderr, 2, errors.New("timeout must be greater than 0 and at most 3600 seconds"))
-	}
-	if opts.Output == "table" {
-		opts.Output = "text"
-	}
-	if opts.Output != "auto" && opts.Output != "json" && opts.Output != "text" {
-		return fail(stderr, 2, errors.New("output must be auto, json, or text"))
-	}
+
 	sources := 0
 	for _, selected := range []bool{*diffFile != "", *staged, *example} {
 		if selected {
@@ -128,15 +137,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, transport *ht
 	case *diffFile != "":
 		data, err = bounded.File(*diffFile, maxDiffBytes, "diff")
 	case *staged:
-		cmd := exec.Command("git", "diff", "--cached", "--no-ext-diff", "--no-textconv")
-		cmd.Stderr = stderr
-		output := bounded.NewBuffer(maxDiffBytes, "staged diff")
-		cmd.Stdout = output
-		err = cmd.Run()
-		if output.Err() != nil {
-			err = output.Err()
-		}
-		data = output.Bytes()
+		data, err = readStagedDiff()
 	default:
 		if isTerminal(stdin) {
 			return fail(stderr, 2, errors.New("pipe a diff, use --diff FILE, or try --example --dry-run"))
@@ -166,25 +167,40 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, transport *ht
 	if err != nil {
 		return fail(stderr, 2, err)
 	}
+	client := decisions.Client{
+		Provider: decisions.Provider(opts.Provider),
+		Model:    opts.Model,
+		Endpoint: opts.Endpoint,
+		HTTP:     transport,
+	}
+	preview, err := client.Preview(request)
+	if err != nil {
+		return fail(stderr, 2, err)
+	}
 	if *dryRun {
-		return printJSON(stdout, stderr, request)
+		return printJSON(stdout, stderr, preview)
 	}
 	key, err := config.APIKey(opts)
 	if err != nil {
 		return fail(stderr, 1, err)
 	}
+	client.APIKey = key
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(opts.TimeoutSeconds*float64(time.Second)))
 	defer cancel()
-	client := decisions.Client{APIKey: key, HTTP: transport}
+
 	answers, err := client.Decide(ctx, request)
 	if err != nil {
+		if decisions.IsUnsupported(err) {
+			return fail(stderr, 2, err)
+		}
 		return fail(stderr, 1, err)
 	}
 	refused := false
 	for _, answer := range answers {
-		refused = refused || answer.Type == "refusal"
+		refused = refused || answer.Type == decisions.AnswerRefusal
 	}
 	if opts.Output == "json" || (opts.Output == "auto" && !isTerminal(stdout)) {
 		if code := printJSON(stdout, stderr, answers); code != 0 {
@@ -199,6 +215,31 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, transport *ht
 	return 0
 }
 
+func readStagedDiff() ([]byte, error) {
+	check := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	out, err := check.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return nil, errors.New("--staged must be run inside a Git repository worktree (cd into a repo or use --diff FILE)")
+	}
+	cmd := exec.Command("git", "diff", "--cached", "--no-ext-diff", "--no-textconv")
+	buf := bounded.NewBuffer(maxDiffBytes, "staged diff")
+	errBuf := bounded.NewBuffer(4096, "git diff stderr")
+	cmd.Stdout = buf
+	cmd.Stderr = errBuf
+	runErr := cmd.Run()
+	if buf.Err() != nil {
+		return nil, buf.Err()
+	}
+	if runErr != nil {
+		msg := strings.TrimSpace(string(errBuf.Bytes()))
+		if msg != "" {
+			return nil, fmt.Errorf("%w: %s", runErr, msg)
+		}
+		return nil, runErr
+	}
+	return buf.Bytes(), nil
+}
+
 func printTable(stdout io.Writer, answers map[string]decisions.Answer) error {
 	out := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(out, "CHECK\tPROBABILITY")
@@ -209,7 +250,7 @@ func printTable(stdout io.Writer, answers map[string]decisions.Answer) error {
 	sort.Strings(names)
 	for _, name := range names {
 		answer := answers[name]
-		if answer.Type == "refusal" {
+		if answer.Type == decisions.AnswerRefusal {
 			fmt.Fprintf(out, "%s\tUNANSWERED (refusal)\n", name)
 		} else {
 			fmt.Fprintf(out, "%s\t%.1f%%\n", name, *answer.Probability*100)

@@ -66,15 +66,28 @@ your preferred binary directory with `go run ./cmd/aid-build --out DIRECTORY`.
 
 ```sh
 AID.diff --example --dry-run
-AID.diff --staged --json
+AID.diff --provider openai --model gpt-6-luna --staged
+AID.diff --provider typesafe --model jev-latest --staged
+AID.diff --provider gemini --model gemini-decision-1 --staged
+AID.diff --provider openrouter --model ~typesafe/jev-latest --staged
+AID.diff --provider litellm --model jev --endpoint http://127.0.0.1:4000 --staged
 git diff --no-ext-diff --no-textconv | AID.diff
 AID.diff --diff change.diff --context 'Public REST API'
 ```
 
-Set `OPENAI_API_KEY`, or put its file path in
-`~/.config/AID/config.yml` under `global.api_key_file`. Live requests send the
-selected diff and context to OpenAI. Dry runs need no credentials and make no
-API call. Results default to JSON for agents/pipes and a table in a terminal.
+`AID.diff` calls native Decisions APIs directly in Go (`openai` by default,
+`typesafe` for TypeSafe Jev System One, `gemini` for Google Gemini Decisions,
+and `openrouter` for OpenRouter's multi-model Decisions API), with optional
+`litellm` gateway support and zero Python, Node.js, or proxy dependencies
+required for direct providers. Set `OPENAI_API_KEY`, `TYPESAFE_API_KEY`,
+`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `LITELLM_API_KEY`, or configure
+isolated key-file paths under `providers.<provider>.api_key_file` in
+`~/.config/AID/config.yml` (existing `global.api_key_file` configurations
+continue to work for `openai` without leaking to other providers). Dry runs
+inspect the resolved provider, endpoint, model, and translated wire payload
+locally without credentials or network calls. Results default to JSON for
+agents/pipes and a table in a terminal. See
+[Decisions providers and configuration](docs/usage.md).
 
 Use `AID --init` to select clients and review the per-tool skills to install.
 The picker follows Reflect's provider-selection and review/apply pattern.

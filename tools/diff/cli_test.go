@@ -36,13 +36,19 @@ tools:
 `, filepath.Join(dir, "absent-key"), checks))
 	t.Setenv("OPENAI_API_KEY", "invalid key never read")
 	for _, test := range []struct {
-		name    string
-		args    []string
-		model   string
-		context string
+		name         string
+		args         []string
+		wantProvider decisions.Provider
+		wantEndpoint string
+		wantModel    string
+		wantContext  string
 	}{
-		{"tool", nil, "tool-model", "tool context"},
-		{"flags", []string{"--model", "flag-model", "--context", ""}, "flag-model", ""},
+		{"tool", nil, decisions.ProviderOpenAI, decisions.OpenAIEndpoint, "tool-model", "tool context"},
+		{"flags", []string{"--model", "flag-model", "--context", ""}, decisions.ProviderOpenAI, decisions.OpenAIEndpoint, "flag-model", ""},
+		{"switch_to_typesafe", []string{"--provider", "typesafe"}, decisions.ProviderTypeSafe, decisions.TypeSafeEndpoint, decisions.TypeSafeDefaultModel, "tool context"},
+		{"switch_to_gemini", []string{"--provider", "gemini"}, decisions.ProviderGemini, decisions.GeminiEndpoint, decisions.GeminiDefaultModel, "tool context"},
+		{"switch_to_openrouter", []string{"--provider", "openrouter"}, decisions.ProviderOpenRouter, decisions.OpenRouterEndpoint, decisions.OpenRouterDefaultModel, "tool context"},
+		{"switch_to_litellm", []string{"--provider", "litellm", "--model", "jev", "--endpoint", "http://127.0.0.1:4000"}, decisions.ProviderLiteLLM, "http://127.0.0.1:4000/v1/decisions", "jev", "tool context"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			args := append([]string{"--config", cfg, "--example", "--dry-run"}, test.args...)
@@ -50,16 +56,63 @@ tools:
 			if code := Run(args, strings.NewReader(""), &out, &stderr); code != 0 {
 				t.Fatalf("code %d: %s", code, &stderr)
 			}
-			var request decisions.Request
-			if err := json.Unmarshal(out.Bytes(), &request); err != nil {
+			var preview decisions.Preview
+			if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
 				t.Fatal(err)
 			}
-			var input map[string]string
-			if err := json.Unmarshal([]byte(request.Input), &input); err != nil {
-				t.Fatal(err)
+			if preview.Provider != test.wantProvider || preview.Endpoint != test.wantEndpoint || preview.Model != test.wantModel {
+				t.Fatalf("unexpected preview header: %+v", preview)
 			}
-			if request.Model != test.model || input["context"] != test.context || len(request.Questions) != 1 || request.Questions[0].Name != "custom" {
-				t.Fatalf("incorrect effective settings: %#v, %#v", request, input)
+
+			switch test.wantProvider {
+			case decisions.ProviderOpenAI, decisions.ProviderLiteLLM:
+				var wire struct {
+					Model     string               `json:"model"`
+					Input     string               `json:"input"`
+					Questions []decisions.Question `json:"questions"`
+				}
+				if err := json.Unmarshal(preview.Request, &wire); err != nil {
+					t.Fatal(err)
+				}
+				var input map[string]string
+				if err := json.Unmarshal([]byte(wire.Input), &input); err != nil {
+					t.Fatal(err)
+				}
+				if wire.Model != test.wantModel || input["context"] != test.wantContext || len(wire.Questions) != 1 || wire.Questions[0].Name != "custom" || wire.Questions[0].Type != "predicate" {
+					t.Fatalf("unexpected OpenAI/LiteLLM wire request: %+v, %+v", wire, input)
+				}
+			case decisions.ProviderTypeSafe, decisions.ProviderOpenRouter:
+				var wire struct {
+					Model     string                    `json:"model"`
+					State     string                    `json:"state"`
+					Questions map[string]map[string]any `json:"questions"`
+				}
+				if err := json.Unmarshal(preview.Request, &wire); err != nil {
+					t.Fatal(err)
+				}
+				var state map[string]string
+				if err := json.Unmarshal([]byte(wire.State), &state); err != nil {
+					t.Fatal(err)
+				}
+				if wire.Model != test.wantModel || state["context"] != test.wantContext || wire.Questions["custom"]["type"] != "noul" {
+					t.Fatalf("unexpected TypeSafe/OpenRouter wire request: %+v", wire)
+				}
+			case decisions.ProviderGemini:
+				var wire struct {
+					Model     string                    `json:"model"`
+					Input     string                    `json:"input"`
+					Questions map[string]map[string]any `json:"questions"`
+				}
+				if err := json.Unmarshal(preview.Request, &wire); err != nil {
+					t.Fatal(err)
+				}
+				var input map[string]string
+				if err := json.Unmarshal([]byte(wire.Input), &input); err != nil {
+					t.Fatal(err)
+				}
+				if wire.Model != test.wantModel || input["context"] != test.wantContext || wire.Questions["custom"]["type"] != "noul" {
+					t.Fatalf("unexpected Gemini wire request: %+v", wire)
+				}
 			}
 		})
 	}
@@ -103,9 +156,9 @@ func TestLiveCredentialOutputAndRefusal(t *testing.T) {
 				answers := make([]decisions.Answer, 0, len(request.Questions))
 				p := 0.75
 				for i, question := range request.Questions {
-					answer := decisions.Answer{Name: question.Name, Type: "predicate", Probability: &p}
+					answer := decisions.Answer{Name: question.Name, Type: decisions.AnswerPredicate, Probability: &p}
 					if test.refusal && i == 0 {
-						answer.Type, answer.Probability = "refusal", nil
+						answer.Type, answer.Probability = decisions.AnswerRefusal, nil
 					}
 					answers = append(answers, answer)
 				}
@@ -133,6 +186,134 @@ func TestLiveCredentialOutputAndRefusal(t *testing.T) {
 				t.Fatal("credential leaked into output")
 			}
 		})
+	}
+}
+
+func TestLiveMultiProviderRoutingAndCredentialIsolation(t *testing.T) {
+	dir := t.TempDir()
+	openAIKeyFile := filepath.Join(dir, "openai.key")
+	writeFile(t, openAIKeyFile, "openai-secret-file\n")
+	cfg := filepath.Join(dir, "config.yml")
+	writeFile(t, cfg, fmt.Sprintf(`global:
+  api_key_file: %q
+providers:
+  litellm:
+    endpoint: https://gateway.example.test
+`, openAIKeyFile))
+
+	t.Setenv("OPENAI_API_KEY", "openai-secret-env")
+	t.Setenv("TYPESAFE_API_KEY", "typesafe-secret-env")
+	t.Setenv("GEMINI_API_KEY", "gemini-secret-env")
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-secret-env")
+	t.Setenv("LITELLM_API_KEY", "litellm-secret-env")
+
+	cases := []struct {
+		provider   string
+		extraArgs  []string
+		wantURL    string
+		authHeader string
+		wantAuth   string
+		respBody   string
+	}{
+		{
+			provider:   "typesafe",
+			wantURL:    "https://api.typesafe.ai/v1/systemone",
+			authHeader: "Authorization",
+			wantAuth:   "Bearer typesafe-secret-env",
+			respBody: `{
+				"model": "jev-1.14.0",
+				"answers": {
+					"breaks_compatibility": {"type": "noul", "noul": 0.1},
+					"changes_behavior": {"type": "noul", "noul": 0.8},
+					"security_sensitive": {"type": "noul", "noul": 0.2}
+				}
+			}`,
+		},
+		{
+			provider:   "gemini",
+			wantURL:    "https://generativelanguage.googleapis.com/v1beta/decisions",
+			authHeader: "x-goog-api-key",
+			wantAuth:   "gemini-secret-env",
+			respBody: `{
+				"answers": {
+					"breaks_compatibility": {"type": "noul", "noul": 0.1, "confidence": 0.9},
+					"changes_behavior": {"type": "noul", "noul": 0.8, "confidence": 0.8},
+					"security_sensitive": {"type": "noul", "noul": 0.2, "confidence": 0.8}
+				}
+			}`,
+		},
+		{
+			provider:   "openrouter",
+			extraArgs:  []string{"--model", "google/gemini-decision-1"},
+			wantURL:    "https://openrouter.ai/api/alpha/decisions",
+			authHeader: "Authorization",
+			wantAuth:   "Bearer openrouter-secret-env",
+			respBody: `{
+				"model": "google/gemini-decision-1",
+				"answers": {
+					"breaks_compatibility": {"type": "noul", "noul": 0.1, "confidence": 0.9},
+					"changes_behavior": {"type": "noul", "noul": 0.8, "confidence": 0.8},
+					"security_sensitive": {"type": "noul", "noul": 0.2, "confidence": 0.8}
+				}
+			}`,
+		},
+		{
+			provider:   "litellm",
+			extraArgs:  []string{"--model", "jev"},
+			wantURL:    "https://gateway.example.test/v1/decisions",
+			authHeader: "Authorization",
+			wantAuth:   "Bearer litellm-secret-env",
+			respBody: `{
+				"model": "typesafe/jev-1.14.0",
+				"answers": [
+					{"name": "breaks_compatibility", "type": "predicate", "probability": 0.1},
+					{"name": "changes_behavior", "type": "predicate", "probability": 0.8},
+					{"name": "security_sensitive", "type": "predicate", "probability": 0.2}
+				]
+			}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			transport := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() != tc.wantURL {
+					t.Errorf("got URL %q, want %q", r.URL.String(), tc.wantURL)
+				}
+				if got := r.Header.Get(tc.authHeader); got != tc.wantAuth {
+					t.Errorf("got %s=%q, want %q", tc.authHeader, got, tc.wantAuth)
+				}
+				if tc.authHeader == "x-goog-api-key" && r.Header.Get("Authorization") != "" {
+					t.Errorf("unexpected Authorization header on Gemini request")
+				}
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader(tc.respBody)),
+					Header:     make(http.Header),
+				}, nil
+			})}
+			args := append([]string{"--config", cfg, "--example", "--provider", tc.provider}, tc.extraArgs...)
+			var out, stderr bytes.Buffer
+			code := run(args, strings.NewReader(""), &out, &stderr, transport)
+			if code != 0 {
+				t.Fatalf("code=%d stderr=%s", code, &stderr)
+			}
+			var answers map[string]decisions.Answer
+			if err := json.Unmarshal(out.Bytes(), &answers); err != nil {
+				t.Fatal(err)
+			}
+			if *answers["changes_behavior"].Probability != 0.8 || answers["changes_behavior"].Type != decisions.AnswerPredicate {
+				t.Fatalf("unexpected normalized answer: %+v", answers["changes_behavior"])
+			}
+		})
+	}
+
+	// Missing GEMINI_API_KEY must fail with exit 1 and NEVER fall back to OPENAI_API_KEY or global.api_key_file.
+	t.Setenv("GEMINI_API_KEY", "")
+	var out, stderr bytes.Buffer
+	code := Run([]string{"--config", cfg, "--example", "--provider", "gemini"}, strings.NewReader(""), &out, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "GEMINI_API_KEY") || strings.Contains(stderr.String(), "openai-secret") {
+		t.Fatalf("expected missing GEMINI_API_KEY exit 1, got code=%d stderr=%s", code, &stderr)
 	}
 }
 
@@ -166,12 +347,21 @@ func TestInvalidCLIInput(t *testing.T) {
 	writeFile(t, cfg, "{}\n")
 	checks := filepath.Join(dir, "checks.json")
 	writeFile(t, checks, "null")
+	badGeminiChecks := filepath.Join(dir, "bad-gemini-checks.json")
+	writeFile(t, badGeminiChecks, `{"invalid.key":"Question?"}`)
 	for _, args := range [][]string{
 		{"--example", "--staged", "--dry-run"},
 		{"--example", "--checks", checks, "--dry-run"},
 		{"--example", "--timeout", "NaN", "--dry-run"},
 		{"--example", "--timeout", "0", "--dry-run"},
 		{"--example", "--output", "yaml", "--dry-run"},
+		{"--example", "--provider", "unknown", "--dry-run"},
+		{"--example", "--provider", "", "--dry-run"},
+		{"--example", "--model", "", "--dry-run"},
+		{"--example", "--endpoint", "ftp://bad.example.com", "--dry-run"},
+		{"--example", "--provider", "litellm", "--dry-run"},
+		{"--example", "--provider", "litellm", "--model", "jev", "--dry-run"},
+		{"--example", "--provider", "gemini", "--checks", badGeminiChecks, "--dry-run"},
 		{"--dry-run"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -201,6 +391,18 @@ func TestStagedDiffInUnbornRepository(t *testing.T) {
 	code := Run([]string{"--config", cfg, "--staged", "--dry-run"}, strings.NewReader(""), &out, &stderr)
 	if code != 0 || !strings.Contains(out.String(), "+answer = 42") {
 		t.Fatalf("staged diff lost: code=%d, out=%s, stderr=%s", code, &out, &stderr)
+	}
+}
+
+func TestStagedOutsideGitRepository(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yml")
+	writeFile(t, cfg, "{}\n")
+	t.Chdir(dir)
+	var out, stderr bytes.Buffer
+	code := Run([]string{"--config", cfg, "--staged", "--dry-run"}, strings.NewReader(""), &out, &stderr)
+	if code != 1 || out.Len() != 0 || !strings.Contains(stderr.String(), "Git repository worktree") || strings.Contains(stderr.String(), "--no-index") {
+		t.Fatalf("unexpected non-repo --staged output: code=%d, out=%s, stderr=%s", code, &out, &stderr)
 	}
 }
 
