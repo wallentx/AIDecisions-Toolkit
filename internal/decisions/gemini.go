@@ -104,7 +104,7 @@ func (a geminiAdapter) decide(ctx context.Context, c Client, req Request) (Respo
 	if err != nil {
 		return Response{}, err
 	}
-	return decodeSystemOneWireResponse(ProviderGemini, geminiDisplayName, req, choiceMaps, true, respBytes)
+	return decodeSystemOneWireResponse(ProviderGemini, geminiDisplayName, req, choiceMaps, true, false, respBytes)
 }
 
 func encodeGeminiWireRequest(model string, req Request) ([]byte, map[string]map[string]ChoiceValue, error) {

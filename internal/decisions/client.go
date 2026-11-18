@@ -41,6 +41,13 @@ var providerRegistry = []ProviderInfo{
 		APIKeyEnv:       "GEMINI_API_KEY",
 	},
 	{
+		ID:              ProviderOpenRouter,
+		DisplayName:     openRouterDisplayName,
+		DefaultModel:    OpenRouterDefaultModel,
+		DefaultEndpoint: OpenRouterEndpoint,
+		APIKeyEnv:       "OPENROUTER_API_KEY",
+	},
+	{
 		ID:            ProviderLiteLLM,
 		DisplayName:   liteLLMDisplayName,
 		APIKeyEnv:     "LITELLM_API_KEY",
@@ -158,6 +165,8 @@ func adapterFor(p Provider) (providerAdapter, error) {
 		return typeSafeAdapter{}, nil
 	case ProviderGemini:
 		return geminiAdapter{}, nil
+	case ProviderOpenRouter:
+		return openRouterAdapter{}, nil
 	case ProviderLiteLLM:
 		return liteLLMAdapter{}, nil
 	default:

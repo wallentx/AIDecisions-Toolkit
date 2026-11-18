@@ -14,10 +14,11 @@ import (
 type Provider string
 
 const (
-	ProviderOpenAI   Provider = "openai"
-	ProviderTypeSafe Provider = "typesafe"
-	ProviderGemini   Provider = "gemini"
-	ProviderLiteLLM  Provider = "litellm"
+	ProviderOpenAI     Provider = "openai"
+	ProviderTypeSafe   Provider = "typesafe"
+	ProviderGemini     Provider = "gemini"
+	ProviderOpenRouter Provider = "openrouter"
+	ProviderLiteLLM    Provider = "litellm"
 
 	DefaultProvider = ProviderOpenAI
 )

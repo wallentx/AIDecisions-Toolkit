@@ -62,8 +62,8 @@ tool imports another. The pull-request delta comparison lives in
 
 `internal/decisions` owns canonical `Request`, `Question`, and `Answer` types,
 the `Evaluator` interface, bounded `net/http` transport, and native provider
-adapters (`openai.go`, `typesafe.go`, `gemini.go`, and `litellm.go`). To add
-another Decisions provider:
+adapters (`openai.go`, `typesafe.go`, `gemini.go`, `openrouter.go`, and
+`litellm.go`). To add another Decisions provider:
 
 1. Verify the provider's official wire endpoint, authentication header, request schema, response schema, refusal or safety-error behavior, and question/level limits.
 2. Add a `Provider` constant in `internal/decisions/types.go` and register its `ProviderInfo` (`DefaultModel`, `DefaultEndpoint`, `APIKeyEnv`) in `providerRegistry` and `adapterFor` inside `internal/decisions/client.go`.

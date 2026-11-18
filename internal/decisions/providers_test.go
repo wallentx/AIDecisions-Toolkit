@@ -201,6 +201,44 @@ func TestMixedQuestionsAcrossAllProviders(t *testing.T) {
 		assertMixedAnswers(t, answers, ProviderGemini, "", true, 1.12)
 	})
 
+	t.Run("openrouter", func(t *testing.T) {
+		fixture := readFixture(t, "openrouter_mixed_response.json")
+		orReq := mixedCanonicalRequest()
+		orReq.Questions[0].Criteria = &PredicateCriteria{
+			TrueDescription:  "Confirmed regression",
+			FalseDescription: "Cosmetic or question only",
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/alpha/decisions" || r.Header.Get("Authorization") != "Bearer openrouter-test-key" {
+				t.Errorf("unexpected OpenRouter request: %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+			}
+			var wire struct {
+				Model     string                     `json:"model"`
+				State     string                     `json:"state"`
+				Questions map[string]json.RawMessage `json:"questions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire.Model != OpenRouterDefaultModel || wire.State != orReq.Input || len(wire.Questions) != 4 {
+				t.Fatalf("unexpected OpenRouter wire request: %+v", wire)
+			}
+			w.Write(fixture)
+		}))
+		defer srv.Close()
+
+		// Bare server URL normalizes to /api/alpha/decisions.
+		answers, err := (Client{
+			Provider: ProviderOpenRouter,
+			APIKey:   "openrouter-test-key",
+			Endpoint: srv.URL,
+		}).Decide(context.Background(), orReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMixedAnswers(t, answers, ProviderOpenRouter, "typesafe/jev-1.14-20261014", false, 1.1)
+	})
+
 	t.Run("litellm_openai_route", func(t *testing.T) {
 		fixture := readFixture(t, "litellm_mixed_response.json")
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -330,6 +368,7 @@ func TestSameCanonicalPredicateRequestAcrossNativeProviders(t *testing.T) {
 		{Provider: ProviderOpenAI, APIKey: "k1", Endpoint: openAISrv.URL},
 		{Provider: ProviderTypeSafe, APIKey: "k2", Endpoint: typeSafeSrv.URL},
 		{Provider: ProviderGemini, APIKey: "k3", Endpoint: geminiSrv.URL},
+		{Provider: ProviderOpenRouter, APIKey: "k4", Endpoint: typeSafeSrv.URL + "/api/alpha/decisions"},
 	}
 	for _, client := range clients {
 		answers, err := client.Decide(context.Background(), req)
@@ -371,8 +410,8 @@ func TestOpenAIStringAndBoolDistinctInSameChoiceQuestion(t *testing.T) {
 		t.Fatalf("expected string 'true', got %+v", answers["kind"].Choice)
 	}
 
-	// TypeSafe, Gemini, and LiteLLM must reject true + "true" collision with UnsupportedError.
-	for _, p := range []Provider{ProviderTypeSafe, ProviderGemini, ProviderLiteLLM} {
+	// TypeSafe, Gemini, OpenRouter, and LiteLLM must reject true + "true" collision with UnsupportedError.
+	for _, p := range []Provider{ProviderTypeSafe, ProviderGemini, ProviderOpenRouter, ProviderLiteLLM} {
 		_, err := (Client{Provider: p, Model: "m", Endpoint: "https://example.com/v1/decisions"}).Preview(req)
 		if !IsUnsupported(err) {
 			t.Fatalf("provider %s accepted colliding bool/string choices: %v", p, err)
@@ -406,13 +445,13 @@ func TestUnsupportedCapabilitiesProduceExplicitErrors(t *testing.T) {
 			t.Fatalf("expected UnsupportedError for predicate criteria on %s, got %v", p, err)
 		}
 	}
-	for _, p := range []Provider{ProviderTypeSafe, ProviderGemini} {
+	for _, p := range []Provider{ProviderTypeSafe, ProviderGemini, ProviderOpenRouter} {
 		if _, err := (Client{Provider: p}).Preview(critReq); err != nil {
 			t.Fatalf("expected predicate criteria supported on %s, got %v", p, err)
 		}
 	}
 
-	// 3. Score >10 levels supported on Gemini (up to 255), rejected on OpenAI, TypeSafe, LiteLLM.
+	// 3. Score >10 levels supported on Gemini and OpenRouter (up to 255), rejected on OpenAI, TypeSafe, LiteLLM.
 	levels := make([]ScoreLevel, 12)
 	for i := range levels {
 		levels[i] = ScoreLevel{Label: fmt.Sprintf("L%d", i)}
@@ -421,8 +460,10 @@ func TestUnsupportedCapabilitiesProduceExplicitErrors(t *testing.T) {
 		Input:     "scale check",
 		Questions: []Question{{Type: QuestionScore, Name: "scale", Instructions: "Rate.", Levels: levels}},
 	}
-	if _, err := (Client{Provider: ProviderGemini}).Preview(scoreReq); err != nil {
-		t.Fatalf("Gemini should allow 12 score levels: %v", err)
+	for _, p := range []Provider{ProviderGemini, ProviderOpenRouter} {
+		if _, err := (Client{Provider: p}).Preview(scoreReq); err != nil {
+			t.Fatalf("%s should allow 12 score levels: %v", p, err)
+		}
 	}
 	for _, p := range []Provider{ProviderOpenAI, ProviderTypeSafe, ProviderLiteLLM} {
 		_, err := (Client{Provider: p, Model: "m", Endpoint: "https://example.com/v1/decisions"}).Preview(scoreReq)
@@ -523,6 +564,36 @@ func TestGeminiSafetyBlockClassificationWithoutEchoingMessage(t *testing.T) {
 	}
 }
 
+func TestOpenRouterEndpointNormalizationAndValidation(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "https://openrouter.ai/api/alpha/decisions", false},
+		{"https://openrouter.ai", "https://openrouter.ai/api/alpha/decisions", false},
+		{"https://openrouter.ai/api/", "https://openrouter.ai/api/alpha/decisions", false},
+		{"https://openrouter.ai/api/alpha/decisions", "https://openrouter.ai/api/alpha/decisions", false},
+		{"https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/systemone", false},
+		{"https://openrouter.ai/api/v1/systemone", "https://openrouter.ai/api/v1/systemone", false},
+		{"ftp://openrouter.ai", "", true},
+		{"https://user:secret@openrouter.ai/api/alpha/decisions", "", true},
+		{"https://openrouter.ai/api/alpha/decisions?key=secret", "", true},
+	}
+	for _, tc := range cases {
+		got, err := ResolveOpenRouterEndpoint(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("ResolveOpenRouterEndpoint(%q) succeeded with %q", tc.in, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("ResolveOpenRouterEndpoint(%q) = (%q, %v), want (%q, nil)", tc.in, got, err, tc.want)
+		}
+	}
+}
+
 func TestLiteLLMEndpointNormalizationAndValidation(t *testing.T) {
 	cases := []struct {
 		in        string
@@ -569,7 +640,7 @@ func TestBoundedResponseHandlingAcrossProviders(t *testing.T) {
 	defer srv.Close()
 
 	req, _ := BuildRequest("input", "", Checks{"check": "Check?"})
-	for _, p := range []Provider{ProviderOpenAI, ProviderTypeSafe, ProviderGemini, ProviderLiteLLM} {
+	for _, p := range []Provider{ProviderOpenAI, ProviderTypeSafe, ProviderGemini, ProviderOpenRouter, ProviderLiteLLM} {
 		_, err := (Client{
 			Provider: p,
 			Model:    "test-model",
@@ -599,7 +670,7 @@ func TestTimeoutRedirectAndHTTPStatusesAcrossProviders(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			for _, p := range []Provider{ProviderOpenAI, ProviderTypeSafe, ProviderGemini, ProviderLiteLLM} {
+			for _, p := range []Provider{ProviderOpenAI, ProviderTypeSafe, ProviderGemini, ProviderOpenRouter, ProviderLiteLLM} {
 				calls = 0
 				_, err := (Client{
 					Provider: p,

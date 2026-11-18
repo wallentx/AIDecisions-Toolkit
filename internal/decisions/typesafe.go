@@ -57,7 +57,7 @@ func (a typeSafeAdapter) preview(req Request, defaultModel, endpoint string) (Pr
 	if err != nil {
 		return Preview{}, err
 	}
-	body, _, err := encodeSystemOneWireRequest(ProviderTypeSafe, model, req, 0)
+	body, _, err := encodeSystemOneWireRequest(ProviderTypeSafe, model, req, 0, typeSafeMaxScoreLevels)
 	if err != nil {
 		return Preview{}, err
 	}
@@ -81,7 +81,7 @@ func (a typeSafeAdapter) decide(ctx context.Context, c Client, req Request) (Res
 	if err != nil {
 		return Response{}, err
 	}
-	body, choiceMaps, err := encodeSystemOneWireRequest(ProviderTypeSafe, model, req, 0)
+	body, choiceMaps, err := encodeSystemOneWireRequest(ProviderTypeSafe, model, req, 0, typeSafeMaxScoreLevels)
 	if err != nil {
 		return Response{}, err
 	}
@@ -93,7 +93,7 @@ func (a typeSafeAdapter) decide(ctx context.Context, c Client, req Request) (Res
 	if err != nil {
 		return Response{}, err
 	}
-	return decodeSystemOneWireResponse(ProviderTypeSafe, typeSafeDisplayName, req, choiceMaps, false, respBytes)
+	return decodeSystemOneWireResponse(ProviderTypeSafe, typeSafeDisplayName, req, choiceMaps, false, false, respBytes)
 }
 
 func encodeSystemOneWireRequest(
@@ -101,6 +101,7 @@ func encodeSystemOneWireRequest(
 	model string,
 	req Request,
 	maxQuestions int,
+	scoreMaxLevels int,
 ) ([]byte, map[string]map[string]ChoiceValue, error) {
 	if maxQuestions > 0 && len(req.Questions) > maxQuestions {
 		return nil, nil, &UnsupportedError{
@@ -140,10 +141,10 @@ func encodeSystemOneWireRequest(
 			wq.Criteria = criteria
 			choiceMaps[q.Name] = byKey
 		case QuestionScore:
-			if len(q.Levels) > typeSafeMaxScoreLevels {
+			if scoreMaxLevels > 0 && len(q.Levels) > scoreMaxLevels {
 				return nil, nil, &UnsupportedError{
 					Provider: provider,
-					Feature:  fmt.Sprintf("score questions with more than %d levels on question %q", typeSafeMaxScoreLevels, q.Name),
+					Feature:  fmt.Sprintf("score questions with more than %d levels on question %q", scoreMaxLevels, q.Name),
 				}
 			}
 			wq.Type = "score"
@@ -175,6 +176,7 @@ func decodeSystemOneWireResponse(
 	req Request,
 	choiceMaps map[string]map[string]ChoiceValue,
 	requireNoulConfidence bool,
+	allowRefusal bool,
 	data []byte,
 ) (Response, error) {
 	root, err := decodeUniqueObject(data)
@@ -233,6 +235,7 @@ func decodeSystemOneWireResponse(
 			ansType,
 			choiceMaps[q.Name],
 			requireNoulConfidence,
+			allowRefusal,
 			fields,
 		)
 		if err != nil {
@@ -258,8 +261,17 @@ func normalizeMapKeyedAnswer(
 	ansType string,
 	byKey map[string]ChoiceValue,
 	requireNoulConfidence bool,
+	allowRefusal bool,
 	fields map[string]json.RawMessage,
 ) (Answer, error) {
+	if allowRefusal && ansType == "refusal" {
+		return Answer{
+			Type:     AnswerRefusal,
+			Name:     q.Name,
+			Provider: provider,
+			Model:    respModel,
+		}, nil
+	}
 	switch ansType {
 	case "noul":
 		if expectedKind != QuestionPredicate {

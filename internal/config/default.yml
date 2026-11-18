@@ -2,8 +2,9 @@ version: 1
 
 global:
   provider: openai
-  # Provider env vars (OPENAI_API_KEY, TYPESAFE_API_KEY, GEMINI_API_KEY, LITELLM_API_KEY)
-  # take precedence over key files. Store a file path here, never a key.
+  # Provider env vars (OPENAI_API_KEY, TYPESAFE_API_KEY, GEMINI_API_KEY,
+  # OPENROUTER_API_KEY, LITELLM_API_KEY) take precedence over key files.
+  # Store a file path here, never a key.
   api_key_file: ""
   model: gpt-6-luna
   timeout_seconds: 30
@@ -15,6 +16,8 @@ providers:
   typesafe:
     api_key_file: ""
   gemini:
+    api_key_file: ""
+  openrouter:
     api_key_file: ""
   litellm:
     api_key_file: ""

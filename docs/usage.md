@@ -21,6 +21,9 @@ providers:
   gemini:
     api_key_file: "~/.ssh/tokens/gemini"
     model: gemini-decision-1
+  openrouter:
+    api_key_file: "~/.ssh/tokens/openrouter"
+    model: "~typesafe/jev-latest"
   litellm:
     api_key_file: "~/.ssh/tokens/litellm"
     endpoint: "http://127.0.0.1:4000"
@@ -39,16 +42,18 @@ Provider-specific environment variables take precedence over key files.
 
 ## Supported Decisions providers
 
-`AID` integrates natively with OpenAI, TypeSafe Jev, and Google Gemini over
-Go's standard `net/http` client, so compiled binaries need no Python, Node.js,
-or external proxy process. An optional `litellm` adapter targets externally
-managed LiteLLM gateways for additional routed decision models.
+`AID` integrates natively with OpenAI, TypeSafe Jev, Google Gemini, and
+OpenRouter over Go's standard `net/http` client, so compiled binaries need no
+Python, Node.js, or external proxy process. An optional `litellm` adapter
+targets externally managed LiteLLM gateways for self-hosted or enterprise-routed
+decision models.
 
 | Provider ID | Native / Gateway | Default model | Default endpoint | Auth header & environment variable |
 | --- | --- | --- | --- | --- |
 | `openai` (default) | Native | `gpt-6-luna` | `https://api.openai.com/v1/decisions` | `Authorization: Bearer` via `OPENAI_API_KEY` |
 | `typesafe` | Native (System One) | `jev-latest` | `https://api.typesafe.ai/v1/systemone` | `Authorization: Bearer` via `TYPESAFE_API_KEY` |
 | `gemini` | Native (`v1beta`) | `gemini-decision-1` | `https://generativelanguage.googleapis.com/v1beta/decisions` | `x-goog-api-key` via `GEMINI_API_KEY` |
+| `openrouter` | Native (multi-model) | `~typesafe/jev-latest` | `https://openrouter.ai/api/alpha/decisions` | `Authorization: Bearer` via `OPENROUTER_API_KEY` |
 | `litellm` | Optional gateway | Explicit required | Explicit required (`/v1/decisions` default path, `/v1/systemone` supported) | `Authorization: Bearer` via `LITELLM_API_KEY` |
 
 ### Precedence and credential isolation
@@ -63,12 +68,12 @@ For the resolved provider `P`, `model` and `endpoint` resolve in order:
 2. `tools.<tool>` (`model`, `endpoint`), when `tools.<tool>` targets `P`
 3. `providers.<P>` (`model`, `endpoint`)
 4. `global` (`model`, `endpoint`), when `global` targets `P`
-5. Built-in provider defaults (`gpt-6-luna`, `jev-latest`, `gemini-decision-1`)
+5. Built-in provider defaults (`gpt-6-luna`, `jev-latest`, `gemini-decision-1`, `~typesafe/jev-latest`)
 
 Switching `--provider` on the command line or under `tools.diff.provider`
 automatically drops un-overridden `global` model, endpoint, and `api_key_file`
 values bound to another provider. `OPENAI_API_KEY` and `global.api_key_file`
-never leak to `typesafe`, `gemini`, or `litellm`. Relative paths in YAML
+never leak to `typesafe`, `gemini`, `openrouter`, or `litellm`. Relative paths in YAML
 resolve relative to `config.yml`, and `~/` expands to the user home directory.
 
 ## Equivalent AID.diff invocations
@@ -77,6 +82,7 @@ resolve relative to `config.yml`, and `~/` expands to the user home directory.
 AID.diff --provider openai --model gpt-6-luna --staged
 AID.diff --provider typesafe --model jev-latest --staged
 AID.diff --provider gemini --model gemini-decision-1 --staged
+AID.diff --provider openrouter --model google/gemini-decision-1 --staged
 AID.diff --provider litellm --model jev --endpoint http://127.0.0.1:4000 --staged
 ```
 
@@ -91,7 +97,7 @@ AID.diff --provider gemini --example --dry-run
 ## Canonical question types and Go usage
 
 The `internal/decisions` package exposes a canonical `Evaluator` interface
-supporting three question types across all four adapters:
+supporting three question types across all five adapters:
 
 1. `predicate` (alias `noul`): Estimates a yes/no probability in `[0, 1]`. TypeSafe and Gemini adapters translate `predicate` to wire `noul` (`criteria: {true, false}` on TypeSafe; `criteria: {true_description, false_description}` on Gemini) and normalize responses back to `type: "predicate"` with `probability`.
 2. `choice`: Selects from 2 to 255 typed `ChoiceOption` values (`StringChoice` or `BoolChoice`), returning the selected `choice`, ordered `choice_probabilities`, and `confidence`. Boolean choices preserve their `bool` type across all providers.
@@ -125,22 +131,22 @@ for _, client := range []decisions.Client{
 
 ## Provider capability matrix and limitations
 
-| Capability | OpenAI (`openai`) | TypeSafe Jev (`typesafe`) | Google Gemini (`gemini`) | LiteLLM (`litellm`) |
-| --- | --- | --- | --- | --- |
-| Wire protocol | `POST /v1/decisions` | `POST /v1/systemone` | `POST /v1beta/decisions` | `POST /v1/decisions` (or explicit `/v1/systemone`) |
-| `predicate` / `noul` | Yes (`predicate`) | Yes (`noul`) | Yes (`noul`) | Yes |
-| Predicate `criteria` (`true`/`false` descriptions) | Unsupported (explicit error) | Yes (`true`, `false`) | Yes (`true_description`, `false_description`) | `/v1/systemone` only; rejected on `/v1/decisions` |
-| Predicate `confidence` in response | Omitted (`nil`) | Omitted (`nil`) | Returned (`[0, 1]`) | Omitted on `/v1/decisions` |
-| `choice` (2 to 255 options) | Yes (`string` and `bool`, including `"true"` + `true`) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) |
-| `score` rubric levels | 2 to 10 levels | 2 to 10 levels | 2 to 255 levels | 2 to 10 levels |
-| Questions per request | 1 to 400 | Bounded by 64k tokens / 32 MiB | 1 to 1,000 (keys `[A-Za-z0-9_-]{1,64}`) | 1 to 128 |
-| Refusal / safety representation | Per-question `type: "refusal"` (exit `3` in `AID.diff`) | No per-question refusal type | Request-level HTTP `400` safety code (`ErrSafetyBlocked`) | Per-question `type: "refusal"` on `/v1/decisions` |
-| Response `model` echo | Returned | Returned (resolved version, e.g. `jev-1.14.0`) | Omitted by API | Returned |
+| Capability | OpenAI (`openai`) | TypeSafe Jev (`typesafe`) | Google Gemini (`gemini`) | OpenRouter (`openrouter`) | LiteLLM (`litellm`) |
+| --- | --- | --- | --- | --- | --- |
+| Wire protocol | `POST /v1/decisions` | `POST /v1/systemone` | `POST /v1beta/decisions` | `POST /api/alpha/decisions` (or `/api/v1/systemone`) | `POST /v1/decisions` (or `/v1/systemone`) |
+| `predicate` / `noul` | Yes (`predicate`) | Yes (`noul`) | Yes (`noul`) | Yes (`noul`) | Yes |
+| Predicate `criteria` (`true`/`false` descriptions) | Unsupported (explicit error) | Yes (`true`, `false`) | Yes (`true_description`, `false_description`) | Yes (`true`, `false`) | `/v1/systemone` only; rejected on `/v1/decisions` |
+| Predicate `confidence` in response | Omitted (`nil`) | Omitted (`nil`) | Returned (`[0, 1]`) | Preserved when returned by routed model | Omitted on `/v1/decisions` |
+| `choice` (2 to 255 options) | Yes (`string` and `bool`, including `"true"` + `true`) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) | Yes (`string` and `bool`; rejects `"true"` + `true` collision) |
+| `score` rubric levels | 2 to 10 levels | 2 to 10 levels | 2 to 255 levels | 2 to 255 levels (model-dependent upstream) | 2 to 10 levels |
+| Questions per request | 1 to 400 | Bounded by 64k tokens / 32 MiB | 1 to 1,000 (keys `[A-Za-z0-9_-]{1,64}`) | Model-dependent (e.g. 200 on Luna, 1,000 on Gemini) | 1 to 128 |
+| Refusal / safety representation | Per-question `type: "refusal"` (exit `3` in `AID.diff`) | No per-question refusal type | Request-level HTTP `400` safety code (`ErrSafetyBlocked`) | Preserves `type: "refusal"` when returned | Per-question `type: "refusal"` on `/v1/decisions` |
+| Response `model` echo | Returned | Returned (resolved version, e.g. `jev-1.14.0`) | Omitted by API | Returned (resolved model ID) | Returned |
 
 The current implementation enforces three scope and verification boundaries:
 
 - Multimodal inputs (images, audio, video, PDFs), conversation-item arrays, and experimental `box` questions are outside the current canonical v1 scope and return explicit `UnsupportedError` errors rather than dropping fields.
-- Automated tests validate all four protocols offline against documented wire schemas using `httptest`; live provider calls are gated behind `AID_LIVE_DECISIONS_TEST=1` and were not executed in automated builds.
+- Automated tests validate all five protocols offline against documented wire schemas using `httptest`; live provider calls are gated behind `AID_LIVE_DECISIONS_TEST=1` and were not executed in automated builds.
 - No automatic retries or cross-provider fallbacks occur; HTTP redirects are refused so credentials never cross host boundaries.
 
 ## Diff checks and exit codes

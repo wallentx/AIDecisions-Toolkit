@@ -6,9 +6,9 @@ changes, custom checks, request previews, and JSON output, reading
 `OPENAI_API_KEY` from the environment.
 
 Use the native `AID.diff` executable for multi-provider Decisions support
-(`openai`, `typesafe`, `gemini`, and `litellm`), `~/.config/AID/config.yml`
-configuration, isolated `api_key_file` settings, automatic JSON output, and the
-installed agent skill workflow.
+(`openai`, `typesafe`, `gemini`, `openrouter`, and `litellm`),
+`~/.config/AID/config.yml` configuration, isolated `api_key_file` settings,
+automatic JSON output, and the installed agent skill workflow.
 
 From the repository root:
 

@@ -136,6 +136,24 @@ providers:
 	if err != nil || gotGemKey != "gemini-file-token" {
 		t.Fatalf("expected gemini-file-token, got %q (%v)", gotGemKey, err)
 	}
+	// 4. Switching --provider to openrouter uses OpenRouter's default model/endpoint and isolated OPENROUTER_API_KEY.
+	orProvider := "openrouter"
+	orOpts, err := cfg.ResolveDecisions("diff", Overrides{Provider: &orProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orOpts.Provider != "openrouter" || orOpts.Model != "~typesafe/jev-latest" || orOpts.Endpoint != "https://openrouter.ai/api/alpha/decisions" || orOpts.APIKeyFile != "" {
+		t.Fatalf("unexpected OpenRouter opts: %+v", orOpts)
+	}
+	t.Setenv("OPENROUTER_API_KEY", "")
+	if _, err := APIKey(orOpts); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Fatalf("openrouter accepted missing OPENROUTER_API_KEY when OPENAI_API_KEY was set: %v", err)
+	}
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-env-token")
+	gotORKey, err := APIKey(orOpts)
+	if err != nil || gotORKey != "openrouter-env-token" {
+		t.Fatalf("expected openrouter-env-token, got %q (%v)", gotORKey, err)
+	}
 }
 
 func TestInvalidConfig(t *testing.T) {

@@ -47,6 +47,7 @@ tools:
 		{"flags", []string{"--model", "flag-model", "--context", ""}, decisions.ProviderOpenAI, decisions.OpenAIEndpoint, "flag-model", ""},
 		{"switch_to_typesafe", []string{"--provider", "typesafe"}, decisions.ProviderTypeSafe, decisions.TypeSafeEndpoint, decisions.TypeSafeDefaultModel, "tool context"},
 		{"switch_to_gemini", []string{"--provider", "gemini"}, decisions.ProviderGemini, decisions.GeminiEndpoint, decisions.GeminiDefaultModel, "tool context"},
+		{"switch_to_openrouter", []string{"--provider", "openrouter"}, decisions.ProviderOpenRouter, decisions.OpenRouterEndpoint, decisions.OpenRouterDefaultModel, "tool context"},
 		{"switch_to_litellm", []string{"--provider", "litellm", "--model", "jev", "--endpoint", "http://127.0.0.1:4000"}, decisions.ProviderLiteLLM, "http://127.0.0.1:4000/v1/decisions", "jev", "tool context"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -80,7 +81,7 @@ tools:
 				if wire.Model != test.wantModel || input["context"] != test.wantContext || len(wire.Questions) != 1 || wire.Questions[0].Name != "custom" || wire.Questions[0].Type != "predicate" {
 					t.Fatalf("unexpected OpenAI/LiteLLM wire request: %+v, %+v", wire, input)
 				}
-			case decisions.ProviderTypeSafe:
+			case decisions.ProviderTypeSafe, decisions.ProviderOpenRouter:
 				var wire struct {
 					Model     string                    `json:"model"`
 					State     string                    `json:"state"`
@@ -94,7 +95,7 @@ tools:
 					t.Fatal(err)
 				}
 				if wire.Model != test.wantModel || state["context"] != test.wantContext || wire.Questions["custom"]["type"] != "noul" {
-					t.Fatalf("unexpected TypeSafe wire request: %+v", wire)
+					t.Fatalf("unexpected TypeSafe/OpenRouter wire request: %+v", wire)
 				}
 			case decisions.ProviderGemini:
 				var wire struct {
@@ -203,6 +204,7 @@ providers:
 	t.Setenv("OPENAI_API_KEY", "openai-secret-env")
 	t.Setenv("TYPESAFE_API_KEY", "typesafe-secret-env")
 	t.Setenv("GEMINI_API_KEY", "gemini-secret-env")
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-secret-env")
 	t.Setenv("LITELLM_API_KEY", "litellm-secret-env")
 
 	cases := []struct {
@@ -233,6 +235,21 @@ providers:
 			authHeader: "x-goog-api-key",
 			wantAuth:   "gemini-secret-env",
 			respBody: `{
+				"answers": {
+					"breaks_compatibility": {"type": "noul", "noul": 0.1, "confidence": 0.9},
+					"changes_behavior": {"type": "noul", "noul": 0.8, "confidence": 0.8},
+					"security_sensitive": {"type": "noul", "noul": 0.2, "confidence": 0.8}
+				}
+			}`,
+		},
+		{
+			provider:   "openrouter",
+			extraArgs:  []string{"--model", "google/gemini-decision-1"},
+			wantURL:    "https://openrouter.ai/api/alpha/decisions",
+			authHeader: "Authorization",
+			wantAuth:   "Bearer openrouter-secret-env",
+			respBody: `{
+				"model": "google/gemini-decision-1",
 				"answers": {
 					"breaks_compatibility": {"type": "noul", "noul": 0.1, "confidence": 0.9},
 					"changes_behavior": {"type": "noul", "noul": 0.8, "confidence": 0.8},

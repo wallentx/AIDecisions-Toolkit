@@ -12,19 +12,22 @@ a diff on stdin, a file with `--diff FILE`, or staged changes with `--staged`.
 {{AID_COMMAND}} --staged --json
 {{AID_COMMAND}} --provider gemini --model gemini-decision-1 --staged --json
 {{AID_COMMAND}} --provider typesafe --model jev-latest --staged --json
+{{AID_COMMAND}} --provider openrouter --model ~typesafe/jev-latest --staged --json
 git diff --no-ext-diff --no-textconv | {{AID_COMMAND}} --json
 {{AID_COMMAND}} --example --dry-run
 ```
 
 Live requests send the diff and optional `--context` to the configured
-Decisions provider (`openai` by default, or `typesafe`, `gemini`, or `litellm`).
-Use `--dry-run` to inspect the resolved provider, endpoint, model, and
-translated wire payload without reading an API key or making a network call.
+Decisions provider (`openai` by default, or `typesafe`, `gemini`, `openrouter`,
+or `litellm`). Use `--dry-run` to inspect the resolved provider, endpoint,
+model, and translated wire payload without reading an API key or making a
+network call.
 
 Each provider reads its own environment variable (`OPENAI_API_KEY`,
-`TYPESAFE_API_KEY`, `GEMINI_API_KEY`, or `LITELLM_API_KEY`), then its isolated
-`api_key_file` in `~/.config/AID/config.yml` or `--api-key-file`. Keep secret
-keys out of prompts, command lines, and terminal output.
+`TYPESAFE_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or
+`LITELLM_API_KEY`), then its isolated `api_key_file` in
+`~/.config/AID/config.yml` or `--api-key-file`. Keep secret keys out of
+prompts, command lines, and terminal output.
 
 For custom checks, pass `--checks FILE` with a JSON object mapping stable names
 to explicit yes/no questions. Include relevant behavior or compatibility

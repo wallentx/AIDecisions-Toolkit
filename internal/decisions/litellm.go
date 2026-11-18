@@ -66,7 +66,7 @@ func (a liteLLMAdapter) preview(req Request, defaultModel, endpoint string) (Pre
 	}
 	var body []byte
 	if systemOne {
-		body, _, err = encodeSystemOneWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions)
+		body, _, err = encodeSystemOneWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions, typeSafeMaxScoreLevels)
 	} else {
 		body, err = encodeOpenAIWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions, true)
 	}
@@ -98,7 +98,7 @@ func (a liteLLMAdapter) decide(ctx context.Context, c Client, req Request) (Resp
 		choiceMaps map[string]map[string]ChoiceValue
 	)
 	if systemOne {
-		body, choiceMaps, err = encodeSystemOneWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions)
+		body, choiceMaps, err = encodeSystemOneWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions, typeSafeMaxScoreLevels)
 	} else {
 		body, err = encodeOpenAIWireRequest(ProviderLiteLLM, model, req, liteLLMMaxQuestions, true)
 	}
@@ -114,7 +114,7 @@ func (a liteLLMAdapter) decide(ctx context.Context, c Client, req Request) (Resp
 		return Response{}, err
 	}
 	if systemOne {
-		return decodeSystemOneWireResponse(ProviderLiteLLM, liteLLMDisplayName, req, choiceMaps, false, respBytes)
+		return decodeSystemOneWireResponse(ProviderLiteLLM, liteLLMDisplayName, req, choiceMaps, false, true, respBytes)
 	}
 	return decodeOpenAIWireResponse(ProviderLiteLLM, liteLLMDisplayName, req, respBytes)
 }
