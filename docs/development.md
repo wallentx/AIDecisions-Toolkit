@@ -43,7 +43,7 @@ AIDecisions-Toolkit/
 |   |-- evidence/
 |   |-- update/
 |   `-- intake/template.md
-`-- VERSION
+`-- install.sh
 ```
 
 Each tool owns its implementation, manifest, skill, tests, and examples. Shared
@@ -76,10 +76,13 @@ A manifest may declare an optional `collector` block (name, description, fixed
 stdio MCP server in `internal/mcp`, started with `AID --mcp`, runs only those
 collectors and the fixed `AID.pr-delta` call. See [mcp.md](mcp.md).
 
-`tool.json` is the source of truth for each tool's version. Root `VERSION`
-identifies the whole tested release. Changing shared code bumps the versions
-of tools whose observable behavior changes; unrelated tools keep their version.
-The updater compares suite releases, which record a compatible set of tools.
+`tool.json` is the source of truth for each tool's version. Git release tags
+(`vMAJOR.MINOR.PATCH`) identify each published suite release, and
+`cmd/aid-build` resolves `RELEASE_TAG` (or the latest reachable `v*` Git tag)
+into `internal/buildinfo.Version` via `-ldflags`. Changing shared code bumps
+the versions of tools whose observable behavior changes; unrelated tools keep
+their version. The updater compares published GitHub release tags and builds
+the release commit locally with that tag stamped in.
 
 ```sh
 go test ./...
@@ -93,40 +96,31 @@ Tests must use fake credentials, mocked services, and temporary client homes.
 Do not make billable requests or modify installed client guidance as part of
 the automated test suite. Test behavior and failure boundaries, not wording.
 
-A release must contain this source layout and a `VERSION` matching its stable
-GitHub tag (`vMAJOR.MINOR.PATCH`). Run the native builder before publishing;
-it discovers tools, builds each executable plus AID, and verifies their version
-contracts. CI also packages native builds for Linux, macOS, and Windows.
-Termux users build locally with Android's native toolchain.
-
-The first published release resets the suite and all tools to `0.1.0`. Earlier
-local snapshot versions are development history. Future suite and tool versions
-remain independent under the version contract above.
-
-CI runs on pushes to `main` and pull requests: formatting, version contracts,
-Go tests/vet, Python tests, native builds, and archive packaging. It also tests
-the minimum Go version. CI uses Go 1.27.2 (minimum lane: 1.26.9) and Python
-3.14.8, verified supported on 2026-10-13. Go supports its two newest major
-releases; Python 3.14 receives security support through October 2030. See
+CI and Release workflows integrate `wallentx/gh-actions/composite/actions-toolbox`
+for runner diagnostics, GitHub metadata, and semantic-version increment
+calculation (`GH_NEXT_PATCH`, `GH_NEXT_MINOR`, and `GH_NEXT_MAJOR`). CI runs on
+pushes to `main` and pull requests across Linux, macOS, and Windows using Go
+1.27.2 (minimum lane: 1.26.9) and Python 3.14.8. See
 [Go's support policy](https://go.dev/doc/devel/release) and
 [Python lifecycle data](https://endoflife.date/python).
 
-To publish a release, update `VERSION` and the default in
-`internal/buildinfo/version.go`, bump affected tool manifests, and write
-`docs/releases/vMAJOR.MINOR.PATCH.md`. Commit and push that source before tagging:
+To publish a release, bump affected `tools/*/tool.json` manifests on `main` and
+dispatch the `Release` workflow (`workflow_dispatch`) with `bump` set to
+`patch`, `minor`, or `major` (or pass an explicit `version` tag such as
+`v0.2.0`):
 
 ```sh
-python .github/scripts/verify-version.py --tag vMAJOR.MINOR.PATCH
-git tag -a vMAJOR.MINOR.PATCH -m 'AIDecisions-Toolkit vMAJOR.MINOR.PATCH'
-git push origin vMAJOR.MINOR.PATCH
+gh workflow run release.yml -f bump=patch
 ```
 
-The tag workflow requires a matching stable version, reruns the complete CI
-workflow, and publishes only after every job passes. Release assets contain
-native ZIPs, a source archive, and `SHA256SUMS`. Native ZIPs contain binary
-checksums and `build-info.json` recording the source commit, tool versions,
-Go version, platform, and workflow URL. Hosted Linux builds disable CGO;
-Termux's local build keeps its native default.
+The `Release` workflow resolves the next SemVer tag through `actions-toolbox`,
+runs the Go, minimum-Go, and Python gates, builds and attests native archives
+across Linux, macOS, and Windows, generates the source archive and
+`SHA256SUMS`, creates the GitHub release (using `docs/releases/vX.Y.Z.md` when
+present or generated changelog notes from `.github/release.yml`), and uploads
+all release assets. Publishing a release directly in GitHub also triggers the
+same asset build and upload pipeline. Hosted Linux builds disable CGO; Termux's
+local build keeps its native default.
 
 The installer is a fresh Go implementation of the interaction pattern inspected
 in `wallentx/codex-reflect` (`reflect init`). Current integrations use provider

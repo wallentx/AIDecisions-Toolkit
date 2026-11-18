@@ -129,15 +129,15 @@ func fixtureDependencies(t *testing.T) dependencies {
 		goos:   "linux",
 		latest: func(context.Context, string) (release, error) { return release{TagName: "v0.3.0"}, nil },
 		checkout: func(_ context.Context, _, _, source string, _ io.Writer) error {
-			if err := os.Mkdir(source, 0700); err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(source, "VERSION"), []byte("0.3.0\n"), 0600)
+			return os.Mkdir(source, 0700)
 		},
 		tools: func(string) ([]catalog.Tool, error) {
 			return []catalog.Tool{{Command: "AID.diff"}, {Command: "AID.new-tool"}}, nil
 		},
-		build: func(_ context.Context, _, out string, _ io.Writer) error {
+		build: func(_ context.Context, _, out, tag string, _ io.Writer) error {
+			if tag != "v0.3.0" {
+				t.Fatalf("expected release tag v0.3.0 passed to builder, got %q", tag)
+			}
 			if err := os.Mkdir(out, 0700); err != nil {
 				return err
 			}
@@ -217,7 +217,7 @@ func TestRollbackRestoresRetiredTools(t *testing.T) {
 
 func TestBuildFailureLeavesInstallationUntouched(t *testing.T) {
 	deps := fixtureDependencies(t)
-	deps.build = func(context.Context, string, string, io.Writer) error { return errors.New("compiler failed") }
+	deps.build = func(context.Context, string, string, string, io.Writer) error { return errors.New("compiler failed") }
 	deps.replace = func(string, []artifact) error { t.Fatal("replacement after build failure"); return nil }
 	dir := t.TempDir()
 	err := perform(context.Background(), options{repository: "example/AID", current: "0.2.0", installDir: dir}, deps, io.Discard, io.Discard)
@@ -230,13 +230,28 @@ func TestBuildFailureLeavesInstallationUntouched(t *testing.T) {
 	}
 }
 
-func TestMismatchedTagFailsBeforeBuild(t *testing.T) {
+func TestUpdateStampsPublishedReleaseTagWithoutVersionFile(t *testing.T) {
 	deps := fixtureDependencies(t)
 	deps.latest = func(context.Context, string) (release, error) { return release{TagName: "v0.4.0"}, nil }
-	deps.build = func(context.Context, string, string, io.Writer) error { t.Fatal("built mismatched tag"); return nil }
-	err := perform(context.Background(), options{repository: "example/AID", current: "0.2.0"}, deps, io.Discard, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "does not match") {
-		t.Fatalf("wrong failure: %v", err)
+	var stampedTag string
+	deps.build = func(_ context.Context, _, out, tag string, _ io.Writer) error {
+		stampedTag = tag
+		if err := os.Mkdir(out, 0700); err != nil {
+			return err
+		}
+		for _, command := range []string{"AID", "AID.diff", "AID.new-tool"} {
+			if err := os.WriteFile(filepath.Join(out, command), []byte("new "+command), 0700); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	dir := t.TempDir()
+	if err := perform(context.Background(), options{repository: "example/AID", current: "0.2.0", installDir: dir}, deps, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if stampedTag != "v0.4.0" {
+		t.Fatalf("stampedTag = %q, want v0.4.0", stampedTag)
 	}
 }
 

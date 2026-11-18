@@ -4,11 +4,13 @@ package builder
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -25,13 +27,109 @@ func ExecutableName(command string) string {
 	return command
 }
 
+// Build compiles and verifies AID and all discovered tool binaries, resolving
+// the suite release version from RELEASE_TAG, Git tags, VERSION, or buildinfo.Version.
 func Build(ctx context.Context, sourceDir, outDir string, progress io.Writer) error {
-	return build(ctx, sourceDir, outDir, progress, buildOne)
+	return BuildRelease(ctx, sourceDir, outDir, os.Getenv("RELEASE_TAG"), progress)
+}
+
+// BuildRelease compiles and verifies AID and all discovered tool binaries using
+// explicitRelease (for example "v0.2.0" or "0.2.0") when non-empty.
+func BuildRelease(ctx context.Context, sourceDir, outDir, explicitRelease string, progress io.Writer) error {
+	return build(ctx, sourceDir, outDir, explicitRelease, progress, buildOne)
 }
 
 type targetBuilder func(context.Context, string, string, string, catalog.Tool, io.Writer) error
 
-func build(ctx context.Context, sourceDir, outDir string, progress io.Writer, compile targetBuilder) error {
+// ResolveVersion determines the suite semantic version (without a leading "v")
+// from explicitRelease, the repository's latest v* Git tag, an optional VERSION
+// file, or buildinfo.Version.
+func ResolveVersion(sourceDir, explicitRelease string) (string, error) {
+	if trimmed := strings.TrimSpace(explicitRelease); trimmed != "" {
+		return normalizeReleaseVersion(trimmed)
+	}
+	if gitVer := gitTagVersion(sourceDir); gitVer != "" {
+		return gitVer, nil
+	}
+	versionPath := filepath.Join(sourceDir, "VERSION")
+	if versionData, err := os.ReadFile(versionPath); err == nil {
+		return normalizeReleaseVersion(strings.TrimSpace(string(versionData)))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return normalizeReleaseVersion(buildinfo.Version)
+}
+
+var fullSemverPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+func normalizeReleaseVersion(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.HasPrefix(trimmed, "vv") {
+		return "", fmt.Errorf("invalid suite release version %q", raw)
+	}
+	withoutV := strings.TrimPrefix(trimmed, "v")
+	canonical := "v" + withoutV
+	if !fullSemverPattern.MatchString(withoutV) || !semver.IsValid(canonical) {
+		return "", fmt.Errorf("invalid suite release version %q", raw)
+	}
+	return withoutV, nil
+}
+
+func gitTagVersion(sourceDir string) string {
+	absRoot, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return ""
+	}
+	evalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		evalRoot = absRoot
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	topCmd := exec.CommandContext(ctx, "git", "-C", evalRoot, "rev-parse", "--show-toplevel")
+	topCmd.Env = cleanGitEnv(evalRoot)
+	topOut, err := topCmd.Output()
+	if err != nil {
+		return ""
+	}
+	topDir := strings.TrimSpace(string(topOut))
+	if evalTop, evalErr := filepath.EvalSymlinks(topDir); evalErr == nil {
+		topDir = evalTop
+	}
+	if filepath.Clean(topDir) != filepath.Clean(evalRoot) {
+		return ""
+	}
+
+	descCmd := exec.CommandContext(ctx, "git", "-C", evalRoot, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
+	descCmd.Env = cleanGitEnv(evalRoot)
+	descOut, err := descCmd.Output()
+	if err != nil {
+		return ""
+	}
+	ver, err := normalizeReleaseVersion(strings.TrimSpace(string(descOut)))
+	if err != nil {
+		return ""
+	}
+	return ver
+}
+
+func cleanGitEnv(root string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(strings.ToUpper(key), "GIT_") {
+			env = append(env, entry)
+		}
+	}
+	return append(
+		env,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CEILING_DIRECTORIES="+filepath.Dir(root),
+	)
+}
+
+func build(ctx context.Context, sourceDir, outDir, explicitRelease string, progress io.Writer, compile targetBuilder) error {
 	root, err := filepath.Abs(sourceDir)
 	if err != nil {
 		return err
@@ -44,13 +142,9 @@ func build(ctx context.Context, sourceDir, outDir string, progress io.Writer, co
 	if err != nil {
 		return err
 	}
-	versionData, err := os.ReadFile(filepath.Join(root, "VERSION"))
+	version, err := ResolveVersion(root, explicitRelease)
 	if err != nil {
 		return err
-	}
-	version := strings.TrimSpace(string(versionData))
-	if !semver.IsValid("v" + version) {
-		return fmt.Errorf("invalid suite VERSION %q", version)
 	}
 	if err := os.MkdirAll(out, 0755); err != nil {
 		return err

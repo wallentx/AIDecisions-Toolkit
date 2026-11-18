@@ -1,7 +1,7 @@
 package buildinfo
 
-// Version identifies the tested suite snapshot; individual tools version separately.
-// The native builder sets this from VERSION using -ldflags.
+// Version identifies the fallback suite version when neither RELEASE_TAG nor
+// a reachable v* Git tag is present; individual tools version separately.
 var Version = "0.1.0"
 
 type Info struct {

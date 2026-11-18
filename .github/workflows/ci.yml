@@ -2,13 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
   workflow_call:
   workflow_dispatch:
 
 permissions:
+  actions: read
+  attestations: read
+  checks: read
   contents: read
+  deployments: read
+  discussions: read
+  issues: read
+  packages: read
+  pages: read
+  pull-requests: read
+  repository-projects: read
+  statuses: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-build:
@@ -25,31 +43,56 @@ jobs:
     env:
       CGO_ENABLED: '0'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+
+      - name: Actions Toolbox
+        uses: wallentx/gh-actions/composite/actions-toolbox@main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          checkout: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
           go-version: '1.27.2'
           cache: true
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
           python-version: '3.14.8'
-      - name: Verify source versions
-        run: python .github/scripts/verify-version.py
+
       - name: Check Go formatting
-        run: git ls-files -z '*.go' | xargs -0 gofmt -l > formatting.txt; test ! -s formatting.txt
+        run: |
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
+          if [[ -n $unformatted ]]; then
+            printf 'Unformatted Go files:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
+
       - name: Test Go packages
         run: go test ./...
+
       - name: Vet Go packages
         run: go vet ./...
+
       - name: Test Python example
         run: python -m unittest discover -s tools/diff/python/tests -v
+
       - name: Build and verify native executables
         run: go run ./cmd/aid-build
+
       - name: Package native executables
         run: python .github/scripts/package.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+
+      - name: Upload native archive
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.os }}
           path: dist/packages/*.zip
@@ -61,13 +104,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+
+      - name: Actions Toolbox
+        uses: wallentx/gh-actions/composite/actions-toolbox@main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          checkout: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
           cache: true
-      - run: go test ./...
+
+      - name: Test on minimum Go version
         env:
           CGO_ENABLED: '0'
+        run: go test ./...
