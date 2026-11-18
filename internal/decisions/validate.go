@@ -161,15 +161,18 @@ func ValidateEndpoint(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-// setEscapedEndpointPath updates parsed with an escaped path (preserving percent-encoded
-// path separators such as %2F while trimming unencoded trailing slashes).
+// setEscapedEndpointPath updates parsed with an escaped path, preserving both
+// percent-encoded separators (such as %2F) and leading double slashes (such as //tenant).
 func setEscapedEndpointPath(parsed *url.URL, escapedPath string) error {
-	rel, err := url.Parse(escapedPath)
+	decoded, err := url.PathUnescape(escapedPath)
 	if err != nil {
 		return errors.New("invalid endpoint URL path")
 	}
-	parsed.Path = rel.Path
-	parsed.RawPath = rel.RawPath
+	parsed.Path = decoded
+	parsed.RawPath = escapedPath
+	if parsed.EscapedPath() != escapedPath {
+		return errors.New("invalid endpoint URL path")
+	}
 	return nil
 }
 

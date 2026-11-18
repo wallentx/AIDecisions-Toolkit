@@ -245,6 +245,9 @@ func (cfg Config) Resolve(name string) (Options, error) {
 
 	opts := cfg.Global
 	opts.Provider = string(globalProvider)
+	if globalProvider != decisions.DefaultProvider {
+		opts.APIKeyFile = ""
+	}
 	if strings.TrimSpace(opts.Model) == "" {
 		opts.Model = info.DefaultModel
 	}
@@ -390,9 +393,11 @@ func (cfg Config) ResolveDecisions(name string, overrides Overrides) (Options, e
 	baseDir := filepath.Dir(cfg.Path)
 
 	// Isolated APIKeyFile resolution for effectiveProvider:
-	// A layer's api_key_file applies ONLY when that layer targets effectiveProvider.
+	// Legacy global.api_key_file applies ONLY to OpenAI (DefaultProvider).
+	// Non-OpenAI providers use providers.<id>.api_key_file, api_key_files.<id>,
+	// tools.<name>.api_key_file (when targeting that provider), or --api-key-file.
 	keyFile := ""
-	if globalProvider == effectiveProvider && cfg.Global.APIKeyFile != "" {
+	if effectiveProvider == decisions.DefaultProvider && cfg.Global.APIKeyFile != "" {
 		keyFile, err = resolveConfigPath(baseDir, cfg.Global.APIKeyFile)
 		if err != nil {
 			return Options{}, err

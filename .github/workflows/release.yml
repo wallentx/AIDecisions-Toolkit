@@ -28,7 +28,7 @@ permissions:
   actions: read
   attestations: read
   checks: read
-  contents: write
+  contents: read
   deployments: read
   discussions: read
   issues: read
@@ -39,7 +39,7 @@ permissions:
   statuses: read
 
 concurrency:
-  group: release-${{ github.event_name }}-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}-${{ github.event_name == 'workflow_dispatch' && inputs.bump || '' }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -63,6 +63,7 @@ jobs:
         uses: wallentx/gh-actions/composite/actions-toolbox@main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PRERELEASE_TYPE: rc.
         with:
           checkout: false
 
@@ -75,6 +76,50 @@ jobs:
           INPUT_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'none' }}
         run: |
           set -euo pipefail
+
+          compute_semver_bump() {
+            local bump_kind=$1
+            local latest=${GH_LATEST_TAG:-v0.0.0}
+            local tag_re='^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z.-]+))?(\+[0-9A-Za-z.-]+)?$'
+            local major=0 minor=0 patch=0 prerelease=""
+            if [[ $latest =~ $tag_re ]]; then
+              major=${BASH_REMATCH[1]}
+              minor=${BASH_REMATCH[2]}
+              patch=${BASH_REMATCH[3]}
+              prerelease=${BASH_REMATCH[5]:-}
+            fi
+
+            local next_major="$((major + 1)).0.0"
+            local next_minor="${major}.$((minor + 1)).0"
+            local next_patch="${major}.${minor}.$((patch + 1))"
+            if [[ -n $prerelease ]]; then
+              (( minor == 0 && patch == 0 )) && next_major="${major}.0.0"
+              (( patch == 0 )) && next_minor="${major}.${minor}.0"
+              next_patch="${major}.${minor}.${patch}"
+            fi
+
+            local base_ver=""
+            case $bump_kind in
+              major) printf 'v%s\n' "$next_major"; return 0 ;;
+              minor) printf 'v%s\n' "$next_minor"; return 0 ;;
+              patch) printf 'v%s\n' "$next_patch"; return 0 ;;
+              major-prerelease) base_ver=$next_major ;;
+              minor-prerelease) base_ver=$next_minor ;;
+              patch-prerelease) base_ver=$next_patch ;;
+            esac
+
+            local max_rc=0 tag suffix
+            while IFS= read -r tag; do
+              suffix=${tag#"v${base_ver}-rc"}
+              suffix=${suffix#.}
+              suffix=${suffix%%+*}
+              if [[ $suffix =~ ^[0-9]+$ ]] && (( 10#$suffix > max_rc )); then
+                max_rc=$((10#$suffix))
+              fi
+            done < <(git tag --list "v${base_ver}-rc*" 2>/dev/null || true)
+
+            printf 'v%s-rc.%d\n' "$base_ver" "$((max_rc + 1))"
+          }
 
           if [[ $GITHUB_EVENT_NAME == "release" ]]; then
             release_tag=$EVENT_RELEASE_TAG
@@ -96,12 +141,12 @@ jobs:
                 printf 'Provide either an exact version tag or choose a version bump (patch, minor, major).\n' >&2
                 exit 1
                 ;;
-              major) release_tag=${GH_NEXT_MAJOR:?GH_NEXT_MAJOR is not set} ;;
-              minor) release_tag=${GH_NEXT_MINOR:?GH_NEXT_MINOR is not set} ;;
-              patch) release_tag=${GH_NEXT_PATCH:?GH_NEXT_PATCH is not set} ;;
-              major-prerelease) release_tag=${GH_NEXT_MAJOR_PRERELEASE:?GH_NEXT_MAJOR_PRERELEASE is not set} ;;
-              minor-prerelease) release_tag=${GH_NEXT_MINOR_PRERELEASE:?GH_NEXT_MINOR_PRERELEASE is not set} ;;
-              patch-prerelease) release_tag=${GH_NEXT_PATCH_PRERELEASE:?GH_NEXT_PATCH_PRERELEASE is not set} ;;
+              major) release_tag=${GH_NEXT_MAJOR:-$(compute_semver_bump major)} ;;
+              minor) release_tag=${GH_NEXT_MINOR:-$(compute_semver_bump minor)} ;;
+              patch) release_tag=${GH_NEXT_PATCH:-$(compute_semver_bump patch)} ;;
+              major-prerelease) release_tag=${GH_NEXT_MAJOR_PRERELEASE:-$(compute_semver_bump major-prerelease)} ;;
+              minor-prerelease) release_tag=${GH_NEXT_MINOR_PRERELEASE:-$(compute_semver_bump minor-prerelease)} ;;
+              patch-prerelease) release_tag=${GH_NEXT_PATCH_PRERELEASE:-$(compute_semver_bump patch-prerelease)} ;;
               *)
                 printf 'Unknown bump value: %s\n' "${INPUT_BUMP:-}" >&2
                 exit 1
@@ -308,6 +353,19 @@ jobs:
       - resolve-release
       - build
     timeout-minutes: 15
+    permissions:
+      actions: read
+      attestations: read
+      checks: read
+      contents: write
+      deployments: read
+      discussions: read
+      issues: read
+      packages: read
+      pages: read
+      pull-requests: read
+      repository-projects: read
+      statuses: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -346,8 +404,12 @@ jobs:
             printf 'No native release archives were downloaded\n' >&2
             exit 1
           fi
+          tmp_version_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_version_dir"' EXIT
+          printf '%s\n' "${AID_RELEASE_TAG#v}" > "${tmp_version_dir}/VERSION"
           git archive --format=tar.gz \
             --prefix="AIDecisions-Toolkit-${AID_RELEASE_TAG}/" \
+            --add-file="${tmp_version_dir}/VERSION" \
             --output="release-assets/AIDecisions-Toolkit-${AID_RELEASE_TAG}-source.tar.gz" \
             HEAD
           (
@@ -356,14 +418,29 @@ jobs:
             sha256sum --check SHA256SUMS
           )
 
-      - name: Ensure GitHub release exists
-        if: github.event_name == 'workflow_dispatch'
+      - name: Publish or update GitHub release
         shell: bash
         run: |
           set -euo pipefail
-          if ! gh release view "$AID_RELEASE_TAG" >/dev/null 2>&1; then
+          shopt -s nullglob
+          assets=(release-assets/*.zip release-assets/*.tar.gz release-assets/SHA256SUMS)
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --tags --force --quiet origin
+          if git rev-parse -q --verify "refs/tags/${AID_RELEASE_TAG}" >/dev/null; then
+            tag_sha="$(git rev-list -n 1 "refs/tags/${AID_RELEASE_TAG}")"
+            if [[ $tag_sha != "$head_sha" ]]; then
+              printf 'Tag %s points to %s rather than built commit %s; refusing to overwrite release assets.\n' \
+                "$AID_RELEASE_TAG" "$tag_sha" "$head_sha" >&2
+              exit 1
+            fi
+          fi
+
+          if gh release view "$AID_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$AID_RELEASE_TAG" "${assets[@]}" --clobber
+          elif [[ $GITHUB_EVENT_NAME == "workflow_dispatch" ]]; then
             args=(
               "$AID_RELEASE_TAG"
+              "${assets[@]}"
               --target "$AID_RELEASE_TARGET"
               --title "AIDecisions-Toolkit $AID_RELEASE_TAG"
             )
@@ -373,16 +450,12 @@ jobs:
             else
               args+=(--generate-notes)
             fi
-            if [[ $AID_RELEASE_TAG == *-* ]]; then
+            tag_without_build=${AID_RELEASE_TAG%%+*}
+            if [[ $tag_without_build == *-* ]]; then
               args+=(--prerelease)
             fi
             gh release create "${args[@]}"
+          else
+            printf 'Release %s does not exist for %s event\n' "$AID_RELEASE_TAG" "$GITHUB_EVENT_NAME" >&2
+            exit 1
           fi
-
-      - name: Upload release assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          assets=(release-assets/*.zip release-assets/*.tar.gz release-assets/SHA256SUMS)
-          gh release upload "$AID_RELEASE_TAG" "${assets[@]}" --clobber

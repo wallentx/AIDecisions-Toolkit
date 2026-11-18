@@ -182,6 +182,32 @@ tools:
 	if _, err := APIKey(clearedOpts); err == nil {
 		t.Fatal("expected missing OPENAI_API_KEY error when tools.diff.api_key_file disabled global key file")
 	}
+
+	// 6. Changing global.provider away from openai must NOT reuse legacy global.api_key_file.
+	nonOpenAICfgPath := filepath.Join(dir, "global-gemini.yml")
+	nonOpenAIData := `version: 1
+global:
+  provider: gemini
+  api_key_file: openai.key
+`
+	if err := os.WriteFile(nonOpenAICfgPath, []byte(nonOpenAIData), 0600); err != nil {
+		t.Fatal(err)
+	}
+	nonOpenAICfg, err := Load(nonOpenAICfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalGemOpts, err := nonOpenAICfg.ResolveDecisions("diff", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalGemOpts.APIKeyFile != "" {
+		t.Fatalf("legacy global.api_key_file leaked when global.provider=gemini: %q", globalGemOpts.APIKeyFile)
+	}
+	t.Setenv("GEMINI_API_KEY", "")
+	if _, err := APIKey(globalGemOpts); err == nil || !strings.Contains(err.Error(), "GEMINI_API_KEY") {
+		t.Fatalf("expected missing GEMINI_API_KEY error, got %v", err)
+	}
 }
 
 func TestInvalidConfig(t *testing.T) {
