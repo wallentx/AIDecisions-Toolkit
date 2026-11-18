@@ -15,7 +15,7 @@ import (
 // render applies presentation limits without making partial evidence look
 // complete. API collection has its own aggregate retention and request limits.
 func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
-	findings, findingsSource := deriveOpenFindings(snapshot, textLimit)
+	findings, findingsSource := deriveOpenFindings(snapshot, textLimit, maxBytes)
 	snapshot.OpenFindings = &findings
 	snapshot.Sources = maps.Clone(snapshot.Sources)
 	if snapshot.Sources == nil {
@@ -155,6 +155,35 @@ func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
 		data, err = encode()
 		return err
 	}
+	// Peer IDs repeat information already present on the findings. If the
+	// packet is too large, discard peer lists together in one encoding pass.
+	if len(data) > maxBytes {
+		items, _ := findingsDocument["unresolved_threads"].([]any)
+		dropped := 0
+		for _, item := range items {
+			finding := item.(map[string]any)
+			peers, _ := finding["same_location_as"].([]any)
+			if len(peers) > 0 {
+				dropped += len(peers)
+				finding["same_location_as"] = []any{}
+				finding["same_location_truncated"] = true
+			}
+		}
+		if dropped > 0 {
+			mark(SourceOpenFindings, nil, "output_budget")
+			omitted["open_findings.same_location_as"] = dropped
+			data, err = encode()
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	// Remove derived rows before reducing any of their original sources.
+	for _, field := range []string{"unthreaded_review_bodies", "unresolved_threads"} {
+		if err := reduce(findingsDocument, field, SourceOpenFindings, "open_findings."+field, nil); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, name := range []string{"files", "statuses", "checks", "issue_comments", "reviews"} {
 		if err := reduce(document, name, name, name, nil); err != nil {
 			return nil, false, err
@@ -169,11 +198,6 @@ func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
 	}
 	if err := reduce(document, "review_threads", "review_threads", "review_threads", nil); err != nil {
 		return nil, false, err
-	}
-	for _, field := range []string{"unthreaded_review_bodies", "unresolved_threads"} {
-		if err := reduce(findingsDocument, field, SourceOpenFindings, "open_findings."+field, nil); err != nil {
-			return nil, false, err
-		}
 	}
 	if len(data) > maxBytes {
 		if count := clipBodies(document["pull_request"], 0); count > 0 {

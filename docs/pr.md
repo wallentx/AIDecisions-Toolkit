@@ -56,9 +56,9 @@ AID.pr --repo OWNER/REPO --pr 42 --json | jq '.open_findings'
 | --- | --- |
 | `author_kind`, `bot` | The API actor type identifies a human, bot, or unknown actor. Known bot logins normalize to `copilot`, `codex`, `coderabbit`, or `claude`; other bots keep a null `bot`. |
 | `severity`, `parse_status` | Only a leading Codex P0-P3 badge supplies inline severity. Other threads have null severity. A malformed badge reports `unrecognized` and makes the view incomplete. |
-| `last_reply_by` | The latest commenter after the finding author's last comment, or null when no such identifiable reply was collected. |
+| `last_reply_by` | The latest identifiable commenter after the finding author's last comment. A tie between different possible latest repliers leaves this field null and makes the reply evidence incomplete. |
 | `pr_author_replied_after` | The PR author commented after the finding author's last comment. `replies_complete: false` means missing comments, identities, or ambiguous timestamps prevent a complete account. |
-| `same_location_as` | Other unresolved thread IDs with the same nonempty path, commit, and line. Outdated threads use their original commit and line when available. This groups locations without judging whether findings are equivalent. |
+| `same_location_as` | Other unresolved thread IDs that share a path, line, diff side (`LEFT` or `RIGHT`), and diff revision. Outdated threads use their original line and revision. A missing coordinate excludes a thread from grouping. This groups locations without judging whether findings are equivalent. |
 
 Each excerpt is bounded by `--text-limit`, carries `excerpt_clipped`, and is
 marked `untrusted: true`. Marker parsing uses the retained source before excerpt
@@ -84,8 +84,11 @@ proof of no findings when `complete` is false. `source_names` identifies the
 underlying sources, and `sources.open_findings` records capture time,
 completeness, and limitations. Missing sources, freshness drift, malformed
 markers, and presentation truncation keep the view incomplete. Exact-location
-peer lists are capped at 100 IDs per thread to bound duplicated output; reaching
-that cap sets `same_location_truncated` and makes the view incomplete.
+peer lists allow up to 100 IDs per thread. Across all threads, encoded peer IDs
+can use up to one eighth of `--max-output-bytes`. The collector allocates that
+space in thread-ID order and marks shortened lists with `same_location_truncated`.
+When the snapshot exceeds its output budget, the renderer trims peer lists and
+other derived data before removing original evidence.
 
 The view is an additive schema-version-1 extension in tool version 0.2.0.
 It reports no automated-review settlement state and does not wait for bots.

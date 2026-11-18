@@ -127,7 +127,7 @@ func TestDiscoveryConfigLimits(t *testing.T) {
 				}
 				var stderr bytes.Buffer
 				code := discover.Run([]string{"--config", path, "--dry-run"}, nil, io.Discard, &stderr)
-				for _, want := range []string{"tools.discover." + b.flag, path, fmt.Sprintf("%d..%d", b.min, b.max), "got " + value} {
+				for _, want := range []string{"tools.discover." + b.flag, strconv.Quote(path), fmt.Sprintf("%d..%d", b.min, b.max), "got " + value} {
 					if code != 2 || !strings.Contains(stderr.String(), want) {
 						t.Errorf("exit=%d stderr=%s; want %s", code, &stderr, want)
 					}

@@ -190,6 +190,7 @@ type CommitStatus struct {
 type RepositoryScope = github.Repository
 
 type ReviewThread struct {
+	DiffSide       string          `json:"diff_side,omitempty"`
 	ID             string          `json:"id"`
 	URL            string          `json:"url,omitempty"`
 	Path           string          `json:"path,omitempty"`

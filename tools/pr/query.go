@@ -9,6 +9,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           id
           isResolved
           isOutdated
+          diffSide
           path
           line
           originalLine

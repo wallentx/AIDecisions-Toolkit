@@ -725,6 +725,7 @@ func (c *collector) processThreadNodes(key string, nodes []*graphQLReviewThread,
 		}
 		thread := ReviewThread{
 			ID:           node.ID,
+			DiffSide:     node.DiffSide,
 			Path:         node.Path,
 			Line:         node.Line,
 			OriginalLine: node.OriginalLine,
@@ -1457,6 +1458,7 @@ type graphQLReviewThreadsConnection struct {
 }
 
 type graphQLReviewThread struct {
+	DiffSide     string                     `json:"diffSide"`
 	ID           string                     `json:"id"`
 	IsResolved   bool                       `json:"isResolved"`
 	IsOutdated   bool                       `json:"isOutdated"`

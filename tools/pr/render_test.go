@@ -3,6 +3,7 @@ package pr
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -132,5 +133,84 @@ func TestTextSummaryEscapesTerminalControlCharacters(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "\x1b") || strings.Contains(output.String(), "\nforged row") {
 		t.Fatalf("unsafe terminal control output: %q", output.String())
+	}
+}
+
+func TestRenderBudgetsFindingsBeforeCollectedEvidence(t *testing.T) {
+	snapshot := findingFixture()
+	template := snapshot.ReviewThreads[0]
+	snapshot.ReviewThreads = nil
+	for i := range 32 {
+		thread := template
+		thread.ID = fmt.Sprintf("PRRT_unique_thread_%03d", i)
+		thread.Path = fmt.Sprintf("path-%02d.go", i)
+		snapshot.ReviewThreads = append(snapshot.ReviewThreads, thread)
+	}
+	// Measure the space for all findings without peer IDs, and the space
+	// for just the collected evidence, independent of field-name lengths.
+	withoutPeers, _, err := render(snapshot, 1<<20, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range snapshot.ReviewThreads {
+		snapshot.ReviewThreads[i].Path = "path-00.go"
+		snapshot.ReviewThreads[i].Resolved = true
+	}
+	withoutOpenThreads, _, err := render(snapshot, 1<<20, 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range snapshot.ReviewThreads {
+		snapshot.ReviewThreads[i].Resolved = false
+	}
+	for _, tc := range []struct {
+		name            string
+		budget          int
+		keepAllFindings bool
+	}{
+		{"drop just peers", len(withoutPeers) + 1024 + 48*len(snapshot.ReviewThreads), true},
+		{"drop derived rows", len(withoutOpenThreads) + 1024, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, complete, err := render(snapshot, tc.budget, 4000)
+			if err != nil || complete || len(data) > tc.budget {
+				t.Fatalf("render returned %d bytes, complete=%v, err=%v", len(data), complete, err)
+			}
+			var got struct {
+				OpenFindings OpenFindings               `json:"open_findings"`
+				Threads      []ReviewThread             `json:"review_threads"`
+				Reviews      []Review                   `json:"reviews"`
+				Sources      map[string]evidence.Source `json:"sources"`
+				Output       struct {
+					Omitted map[string]int `json:"omitted_items"`
+				} `json:"output"`
+			}
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Threads) != len(snapshot.ReviewThreads) || len(got.Reviews) != len(snapshot.Reviews) || !got.Sources[SourceReviewThreads].Complete || !got.Sources[SourceReviews].Complete {
+				t.Fatalf("lost original evidence: %d threads, %d reviews, omitted %v", len(got.Threads), len(got.Reviews), got.Output.Omitted)
+			}
+			for _, thread := range got.Threads {
+				if len(thread.Comments) != len(template.Comments) || !thread.CommentsSource.Complete {
+					t.Fatalf("lost original comments in %s", thread.ID)
+				}
+			}
+			if got.OpenFindings.Complete || got.Sources[SourceOpenFindings].Complete || got.Output.Omitted["open_findings.same_location_as"] == 0 {
+				t.Fatalf("peer omission is unreported: %+v", got.Output.Omitted)
+			}
+			if tc.keepAllFindings {
+				if len(got.OpenFindings.UnresolvedThreads) != len(snapshot.ReviewThreads) {
+					t.Fatalf("lost findings with sufficient space: %v", got.Output.Omitted)
+				}
+				for _, f := range got.OpenFindings.UnresolvedThreads {
+					if len(f.SameLocationAs) > 0 || !f.SameLocationTruncated {
+						t.Fatalf("inaccurate peer status: %+v", f)
+					}
+				}
+			} else if got.Output.Omitted["open_findings.unresolved_threads"] == 0 {
+				t.Fatalf("expected omitted findings: %v", got.Output.Omitted)
+			}
+		})
 	}
 }

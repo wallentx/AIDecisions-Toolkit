@@ -30,6 +30,7 @@ type FindingCounts struct {
 }
 
 type Finding struct {
+	DiffSide              string   `json:"diff_side,omitempty"`
 	ThreadID              string   `json:"thread_id"`
 	URL                   string   `json:"url"`
 	Author                string   `json:"author"`
@@ -120,7 +121,7 @@ func sameActor(a, b Actor) bool {
 
 // Only the leading Codex badge carries inline severity. A changed image marker
 // is reported as unrecognized instead of guessing from prose elsewhere.
-var codexBadge = regexp.MustCompile(`^(?:\*\*)?(?:\[)?!\[P([0-3]) Badge\]\([^\s()]+\)`)
+var codexBadge = regexp.MustCompile(`^(?:\*\*)?(?:<sub>)*(?:\[)?!\[P([0-3]) Badge\]\([^\s()]+\)`)
 
 func findingSeverity(bot *string, body string) (*string, string) {
 	if bot == nil || *bot != "codex" {
@@ -144,9 +145,56 @@ func findingExcerpt(body string, limit int) (string, bool) {
 	return string([]rune(body)[:limit]), true
 }
 
+// Comments are in timestamp order. Connection order identifies the root, but
+// cannot establish whether a reply with the same timestamp was posted later.
+func recordFindingReplies(f *Finding, comments []Comment, prAuthor Actor) {
+	reviewer := comments[0].Author
+	boundary := comments[0].CreatedAt
+	for _, c := range comments[1:] {
+		if sameActor(c.Author, reviewer) {
+			boundary = c.CreatedAt
+		}
+	}
+	if reviewer.Login == "" || prAuthor.Login == "" || boundary.IsZero() {
+		f.RepliesComplete = false
+	}
+	var latest *Comment
+	ambiguousLatest := false
+	for i := range comments[1:] {
+		c := &comments[i+1]
+		if sameActor(c.Author, reviewer) {
+			continue
+		}
+		if c.CreatedAt.IsZero() || boundary.IsZero() || c.CreatedAt.Equal(boundary) {
+			f.RepliesComplete = false
+			continue
+		}
+		if c.CreatedAt.Before(boundary) {
+			continue
+		}
+		if c.Author.Login == "" {
+			f.RepliesComplete = false
+		}
+		if sameActor(c.Author, prAuthor) {
+			f.PRAuthorRepliedAfter = true
+		}
+		if latest == nil || c.CreatedAt.After(latest.CreatedAt) {
+			latest, ambiguousLatest = c, false
+		} else if !sameActor(c.Author, latest.Author) {
+			ambiguousLatest = true
+		}
+	}
+	if ambiguousLatest {
+		f.RepliesComplete = false
+	} else if latest != nil && latest.Author.Login != "" {
+		login := latest.Author.Login
+		f.LastReplyBy = &login
+	}
+}
+
 // deriveOpenFindings runs before presentation clipping so markers and review
 // identities are interpreted from the complete retained source, never excerpts.
-func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidence.Source) {
+func deriveOpenFindings(snapshot Snapshot, textLimit, maxBytes int) (OpenFindings, evidence.Source) {
 	result := OpenFindings{HeadSHA: snapshot.PullRequest.Head.SHA, UnresolvedThreads: []Finding{}, UnthreadedReviewBodies: []ReviewBody{}, CountsScope: "collected", SourceNames: append([]string{}, findingSources...), Complete: true}
 	source := evidence.Source{Complete: true, CapturedAt: snapshot.FinishedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")}
 	incomplete := func(reason string) {
@@ -186,7 +234,7 @@ func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidenc
 		if thread.Resolved {
 			continue
 		}
-		finding := Finding{ThreadID: thread.ID, URL: thread.URL, Path: thread.Path, Line: thread.Line, Outdated: thread.Outdated, Untrusted: true, AuthorKind: "unknown", ParseStatus: "not_present", SameLocationAs: []string{}, RepliesComplete: thread.CommentsSource.Complete}
+		finding := Finding{ThreadID: thread.ID, URL: thread.URL, Path: thread.Path, Line: thread.Line, DiffSide: thread.DiffSide, Outdated: thread.Outdated, Untrusted: true, AuthorKind: "unknown", ParseStatus: "not_present", SameLocationAs: []string{}, RepliesComplete: thread.CommentsSource.Complete}
 		if len(thread.Comments) > 0 {
 			comments := append([]Comment{}, thread.Comments...)
 			sortComments(comments)
@@ -197,7 +245,7 @@ func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidenc
 			if finding.URL == "" {
 				finding.URL = first.URL
 			}
-			if thread.Outdated && first.OriginalCommitID != "" {
+			if thread.Outdated {
 				finding.Commit = first.OriginalCommitID
 				finding.Line = thread.OriginalLine
 			}
@@ -206,32 +254,7 @@ func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidenc
 				incomplete("unrecognized_severity_marker")
 			}
 			finding.Excerpt, finding.ExcerptClipped = findingExcerpt(first.Body, textLimit)
-			lastFinding := 0
-			for index, comment := range comments {
-				if sameActor(comment.Author, first.Author) {
-					lastFinding = index
-				}
-			}
-			for _, comment := range comments[lastFinding+1:] {
-				// A tied or missing timestamp cannot establish that the author replied after.
-				if !comment.CreatedAt.After(comments[lastFinding].CreatedAt) || comments[lastFinding].CreatedAt.IsZero() {
-					finding.RepliesComplete = false
-					continue
-				}
-				if comment.Author.Login != "" {
-					login := comment.Author.Login
-					finding.LastReplyBy = &login
-				} else {
-					finding.LastReplyBy = nil
-					finding.RepliesComplete = false
-				}
-				if sameActor(comment.Author, snapshot.PullRequest.Author) {
-					finding.PRAuthorRepliedAfter = true
-				}
-			}
-			if first.Author.Login == "" || snapshot.PullRequest.Author.Login == "" {
-				finding.RepliesComplete = false
-			}
+			recordFindingReplies(&finding, comments, snapshot.PullRequest.Author)
 		} else {
 			finding.RepliesComplete = false
 		}
@@ -251,36 +274,7 @@ func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidenc
 		}
 		result.UnresolvedThreads = append(result.UnresolvedThreads, finding)
 	}
-	// A fixed peer cap prevents a single duplicated location from creating
-	// quadratic retained data. The source explicitly reports incomplete grouping.
-	const maxLocationPeers = 100
-	type location struct {
-		path, commit string
-		line         int
-	}
-	groups := map[location][]int{}
-	for i, f := range result.UnresolvedThreads {
-		if f.Path != "" && f.Commit != "" && f.Line != nil {
-			key := location{f.Path, f.Commit, *f.Line}
-			groups[key] = append(groups[key], i)
-		}
-	}
-	for _, indices := range groups {
-		for _, i := range indices {
-			finding := &result.UnresolvedThreads[i]
-			for _, j := range indices {
-				if i == j {
-					continue
-				}
-				if len(finding.SameLocationAs) == maxLocationPeers {
-					finding.SameLocationTruncated = true
-					incomplete("same_location_peer_limit")
-					break
-				}
-				finding.SameLocationAs = append(finding.SameLocationAs, result.UnresolvedThreads[j].ThreadID)
-			}
-		}
-	}
+	groupLocations(result.UnresolvedThreads, maxBytes, incomplete)
 	reviews := append([]Review{}, snapshot.Reviews...)
 	sort.Slice(reviews, func(i, j int) bool {
 		if reviews[i].ID != reviews[j].ID {
@@ -302,10 +296,13 @@ func deriveOpenFindings(snapshot Snapshot, textLimit int) (OpenFindings, evidenc
 			outside = strings.Index(body, "Outside diff range comments")
 			malformedOutside = outside < 0 && strings.Contains(strings.ToLower(body), "outside diff range")
 		}
-		if outside >= 0 {
-			label, parse, body = "outside_diff_range", "ok", body[outside:]
-		}
 		matched := review.NodeID != "" && matchedReviews[review.NodeID]
+		if outside >= 0 {
+			label, parse = "outside_diff_range", "ok"
+			if matched {
+				body = body[outside:]
+			}
+		}
 		if malformedOutside {
 			label, parse = "unrecognized_review_body", "unrecognized"
 			incomplete("unrecognized_review_body_marker")
