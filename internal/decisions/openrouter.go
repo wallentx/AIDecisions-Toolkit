@@ -25,18 +25,21 @@ func ResolveOpenRouterEndpoint(rawURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cleanPath := strings.TrimRight(parsed.Path, "/")
+	cleanEscaped := strings.TrimRight(parsed.EscapedPath(), "/")
+	var targetEscaped string
 	switch {
-	case cleanPath == "":
-		parsed.Path = "/api/alpha/decisions"
-	case cleanPath == "/api" || strings.HasSuffix(cleanPath, "/api"):
-		parsed.Path = cleanPath + "/alpha/decisions"
-	case cleanPath == "/v1" || strings.HasSuffix(cleanPath, "/v1"):
-		parsed.Path = cleanPath + "/systemone"
+	case cleanEscaped == "":
+		targetEscaped = "/api/alpha/decisions"
+	case cleanEscaped == "/api" || strings.HasSuffix(cleanEscaped, "/api"):
+		targetEscaped = cleanEscaped + "/alpha/decisions"
+	case cleanEscaped == "/v1" || strings.HasSuffix(cleanEscaped, "/v1"):
+		targetEscaped = cleanEscaped + "/systemone"
 	default:
-		parsed.Path = cleanPath
+		targetEscaped = cleanEscaped
 	}
-	parsed.RawPath = ""
+	if err := setEscapedEndpointPath(parsed, targetEscaped); err != nil {
+		return "", err
+	}
 	return parsed.String(), nil
 }
 

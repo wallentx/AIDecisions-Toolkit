@@ -154,6 +154,34 @@ providers:
 	if err != nil || gotORKey != "openrouter-env-token" {
 		t.Fatalf("expected openrouter-env-token, got %q (%v)", gotORKey, err)
 	}
+
+	// 5. Explicit empty tools.diff.api_key_file: "" clears global.api_key_file fallback.
+	clearCfgPath := filepath.Join(dir, "clear-key.yml")
+	clearData := `version: 1
+global:
+  api_key_file: openai.key
+tools:
+  diff:
+    api_key_file: ""
+`
+	if err := os.WriteFile(clearCfgPath, []byte(clearData), 0600); err != nil {
+		t.Fatal(err)
+	}
+	clearCfg, err := Load(clearCfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearedOpts, err := clearCfg.ResolveDecisions("diff", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearedOpts.APIKeyFile != "" {
+		t.Fatalf("expected tools.diff.api_key_file: \"\" to clear global key file, got %q", clearedOpts.APIKeyFile)
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	if _, err := APIKey(clearedOpts); err == nil {
+		t.Fatal("expected missing OPENAI_API_KEY error when tools.diff.api_key_file disabled global key file")
+	}
 }
 
 func TestInvalidConfig(t *testing.T) {

@@ -161,6 +161,18 @@ func ValidateEndpoint(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
+// setEscapedEndpointPath updates parsed with an escaped path (preserving percent-encoded
+// path separators such as %2F while trimming unencoded trailing slashes).
+func setEscapedEndpointPath(parsed *url.URL, escapedPath string) error {
+	rel, err := url.Parse(escapedPath)
+	if err != nil {
+		return errors.New("invalid endpoint URL path")
+	}
+	parsed.Path = rel.Path
+	parsed.RawPath = rel.RawPath
+	return nil
+}
+
 func validProbability(p *float64) bool {
 	return p != nil && !math.IsNaN(*p) && !math.IsInf(*p, 0) && *p >= 0 && *p <= 1
 }

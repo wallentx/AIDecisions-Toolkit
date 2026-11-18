@@ -24,19 +24,22 @@ func ResolveLiteLLMEndpoint(rawURL string) (endpoint string, systemOne bool, err
 	if err != nil {
 		return "", false, err
 	}
-	cleanPath := strings.TrimRight(parsed.Path, "/")
+	cleanEscaped := strings.TrimRight(parsed.EscapedPath(), "/")
+	var targetEscaped string
 	switch {
-	case cleanPath == "":
-		parsed.Path = "/v1/decisions"
-	case cleanPath == "/v1" || strings.HasSuffix(cleanPath, "/v1"):
-		parsed.Path = cleanPath + "/decisions"
-	case cleanPath == "/systemone" || strings.HasSuffix(cleanPath, "/systemone"):
-		parsed.Path = cleanPath
+	case cleanEscaped == "":
+		targetEscaped = "/v1/decisions"
+	case cleanEscaped == "/v1" || strings.HasSuffix(cleanEscaped, "/v1"):
+		targetEscaped = cleanEscaped + "/decisions"
+	case cleanEscaped == "/systemone" || strings.HasSuffix(cleanEscaped, "/systemone"):
+		targetEscaped = cleanEscaped
 		systemOne = true
 	default:
-		parsed.Path = cleanPath
+		targetEscaped = cleanEscaped
 	}
-	parsed.RawPath = ""
+	if err := setEscapedEndpointPath(parsed, targetEscaped); err != nil {
+		return "", false, err
+	}
 	return parsed.String(), systemOne, nil
 }
 

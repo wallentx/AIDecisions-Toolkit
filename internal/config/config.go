@@ -410,13 +410,13 @@ func (cfg Config) ResolveDecisions(name string, overrides Overrides) (Options, e
 			return Options{}, err
 		}
 	}
-	if toolProvider == effectiveProvider && toolLayer.APIKeyFile != nil && *toolLayer.APIKeyFile != "" {
+	if toolProvider == effectiveProvider && toolLayer.APIKeyFile != nil {
 		keyFile, err = resolveConfigPath(baseDir, *toolLayer.APIKeyFile)
 		if err != nil {
 			return Options{}, err
 		}
 	}
-	if pFile := toolLayer.APIKeyFiles[providerKey]; pFile != "" {
+	if pFile, ok := toolLayer.APIKeyFiles[providerKey]; ok {
 		keyFile, err = resolveConfigPath(baseDir, pFile)
 		if err != nil {
 			return Options{}, err
