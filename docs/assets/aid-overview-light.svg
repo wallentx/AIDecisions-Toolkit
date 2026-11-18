@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" width="960" height="476" role="img" aria-label="Comparison between ad-hoc LLM API calls and AIDecisions-Toolkit">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 934" width="488" height="934" role="img" aria-label="Comparison between ad-hoc LLM API calls and AIDecisions-Toolkit">
   <defs>
     <marker id="arrow-bad" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 1 L 10 5 L 0 9 z" fill="#cf3f3f"/>
@@ -12,9 +12,10 @@
   </defs>
 
   <!-- Canvas background -->
-  <rect x="0" y="0" width="960" height="476" rx="12" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <rect x="0" y="0" width="488" height="934" rx="12" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
 
-  <!-- ================= LEFT PANEL: WITHOUT AID ================= -->
+  <!-- The examples stack vertically so each fills the README width. -->
+  <g id="without-aid">
   <rect x="18" y="18" width="452" height="440" rx="10" fill="#ffffff" stroke="#efb1b1" stroke-width="1.25"/>
   <rect x="18" y="18" width="452" height="42" rx="10" fill="#fcebeb"/>
   <rect x="18" y="48" width="452" height="12" fill="#fcebeb"/>
@@ -24,7 +25,7 @@
   <text x="52" y="43" font-family='ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace' font-size="12" font-weight="700" fill="#cf3f3f">WITHOUT AID</text>
   <text x="454" y="43" text-anchor="end" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#59636e">Improvised multi-call agent loop</text>
 
-  <!-- User prompt box (Left) -->
+  <!-- User prompt box (Without) -->
   <rect x="36" y="76" width="416" height="44" rx="7" fill="#f0f4f8" stroke="#d0d7de" stroke-width="1"/>
   <text x="50" y="94" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="10.5" font-weight="600" fill="#59636e">USER ASK</text>
   <text x="50" y="111" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" font-weight="600" fill="#1f2328">&quot;Is PR #42 ready, and does my staged diff break the API?&quot;</text>
@@ -56,13 +57,15 @@
   <text x="50" y="352" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="11.5" font-weight="700" fill="#1f2328">Agent parses raw responses across extra LLM turns</text>
   <text x="50" y="371" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="10.5" fill="#59636e">Unbounded JSON &amp; logs crowd context; prose guesses replace probabilities</text>
 
-  <!-- Bottom cost badge (Left) -->
+  <!-- Bottom cost badge (Without) -->
   <rect x="36" y="398" width="416" height="44" rx="7" fill="#fcebeb" stroke="#efb1b1" stroke-width="1"/>
   <text x="244" y="417" text-anchor="middle" font-family='ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace' font-size="11" font-weight="700" fill="#cf3f3f">8-12 SHELL &amp; API CALLS  ·  HIGH CONTEXT BURN</text>
   <text x="244" y="433" text-anchor="middle" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="10.5" fill="#59636e">Repeated parsing work, missed pages, and uncalibrated text judgment</text>
 
 
-  <!-- ================= RIGHT PANEL: WITH AID ================= -->
+  </g>
+
+  <g id="with-aid" transform="translate(-472 458)">
   <rect x="490" y="18" width="452" height="440" rx="10" fill="#ffffff" stroke="#8fd4b5" stroke-width="1.25"/>
   <rect x="490" y="18" width="452" height="42" rx="10" fill="#e6f6ef"/>
   <rect x="490" y="48" width="452" height="12" fill="#e6f6ef"/>
@@ -72,7 +75,7 @@
   <text x="524" y="43" font-family='ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace' font-size="12" font-weight="700" fill="#1e8a5c">WITH AIDECISIONS-TOOLKIT</text>
   <text x="926" y="43" text-anchor="end" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#59636e">Agent skills + single-pass Decisions</text>
 
-  <!-- User prompt box (Right) -->
+  <!-- User prompt box (With) -->
   <rect x="508" y="76" width="416" height="44" rx="7" fill="#f0f4f8" stroke="#d0d7de" stroke-width="1"/>
   <text x="522" y="94" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="10.5" font-weight="600" fill="#59636e">SAME USER ASK</text>
   <text x="522" y="111" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" font-weight="600" fill="#1f2328">&quot;Is PR #42 ready, and does my staged diff break the API?&quot;</text>
@@ -123,8 +126,9 @@
   <line x1="609" y1="378" x2="609" y2="394" stroke="#1e8a5c" stroke-width="1.5" marker-end="url(#arrow-ok)"/>
   <line x1="823" y1="378" x2="823" y2="394" stroke="#1e8a5c" stroke-width="1.5" marker-end="url(#arrow-ok)"/>
 
-  <!-- Bottom outcome badge (Right) -->
+  <!-- Bottom outcome badge (With) -->
   <rect x="508" y="398" width="416" height="44" rx="7" fill="#e6f6ef" stroke="#8fd4b5" stroke-width="1"/>
   <text x="716" y="417" text-anchor="middle" font-family='ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace' font-size="11" font-weight="700" fill="#1e8a5c">READY-TO-ACT STRUCTURED ANSWER IN ONE PASS</text>
   <text x="716" y="433" text-anchor="middle" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="10.5" fill="#59636e">Agent or human gets compact JSON &amp; calibrated [0, 1] probabilities</text>
+  </g>
 </svg>

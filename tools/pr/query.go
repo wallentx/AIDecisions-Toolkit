@@ -9,6 +9,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
           id
           isResolved
           isOutdated
+          diffSide
           path
           line
           originalLine
@@ -18,7 +19,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
               id
 			  fullDatabaseId
               url
-              author { login }
+              author { login type: __typename }
               authorAssociation
               body
               createdAt
@@ -30,6 +31,7 @@ const reviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!
               outdated
               commit { oid }
               originalCommit { oid }
+              pullRequestReview { id }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -49,7 +51,7 @@ const reviewThreadCommentsQuery = `query($threadID: ID!, $cursor: String, $pageS
           id
 		  fullDatabaseId
           url
-          author { login }
+          author { login type: __typename }
           authorAssociation
           body
           createdAt
@@ -61,6 +63,7 @@ const reviewThreadCommentsQuery = `query($threadID: ID!, $cursor: String, $pageS
           outdated
           commit { oid }
           originalCommit { oid }
+          pullRequestReview { id }
         }
         pageInfo { hasNextPage endCursor }
       }

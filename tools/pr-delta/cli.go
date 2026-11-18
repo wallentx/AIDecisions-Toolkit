@@ -8,19 +8,30 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 	"aid/internal/github"
 	core "aid/internal/prdelta"
 
 	"golang.org/x/term"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":            {Min: 0, Max: 3600, OpenMin: true},
+	"max-pages":          {Min: 1, Max: 100},
+	"max-requests":       {Min: 4, Max: 2000},
+	"max-commit-patches": {Min: 0, Max: 500},
+	"max-hunks":          {Min: 1, Max: 1000},
+	"max-response-bytes": {Min: 4096, Max: 33554432},
+	"max-output-bytes":   {Min: 4096, Max: 16777216},
+	"text-limit":         {Min: 0, Max: 65536},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -83,6 +94,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	showVersion := flags.Bool("version", false, "print tool and suite versions")
 	jsonOutput := flags.Bool("json", false, "emit JSON evidence")
 	textOutput := flags.Bool("text", false, "emit a short readable summary")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.pr-delta [options] https://github.com/OWNER/REPO/pull/NUMBER\n       AID.pr-delta --repo OWNER/REPO --pr NUMBER [--reviewer LOGIN] [--since-commit SHA] [options]\n\nReport what changed in a pull request since a reviewer's last review. Read-only; no model call.\nExit 0: complete; 3: incomplete, missing baseline, or head or base moved; 2: usage; 1: fatal error.")
 		flags.PrintDefaults()
@@ -146,14 +158,11 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if !visited["max-response-bytes"] {
 		*maxResponse = configured.MaxResponseBytes
 	}
-	if *gh == "" || math.IsNaN(*timeout) || math.IsInf(*timeout, 0) || *timeout <= 0 || *timeout > 3600 {
-		return cliError(stderr, 2, "gh must be set and timeout must be greater than 0 and at most 3600 seconds")
+	if *gh == "" {
+		return cliError(stderr, 2, "--gh must be set")
 	}
-	if *maxPages < 1 || *maxPages > 100 || *maxRequests < 4 || *maxRequests > 2000 || *maxPatches < 0 || *maxPatches > 500 || *maxHunks < 1 || *maxHunks > 1000 {
-		return cliError(stderr, 2, "invalid page, request, commit-patch, or hunk limit")
-	}
-	if *maxResponse < 4096 || *maxResponse > 32<<20 || *maxOutput < 4096 || *maxOutput > 16<<20 || *textLimit < 0 || *textLimit > 1<<16 {
-		return cliError(stderr, 2, "invalid response, output, or text limit")
+	if err := cliLimits.Validate(flags); err != nil {
+		return cliError(stderr, 2, err.Error())
 	}
 	if *reviewer != "" && !core.ValidLogin(*reviewer) {
 		return cliError(stderr, 2, "--reviewer must be a GitHub login")

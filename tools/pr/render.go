@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strconv"
 	"unicode/utf8"
@@ -14,6 +15,14 @@ import (
 // render applies presentation limits without making partial evidence look
 // complete. API collection has its own aggregate retention and request limits.
 func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
+	findings, findingsSource := deriveOpenFindings(snapshot, textLimit, maxBytes)
+	snapshot.OpenFindings = &findings
+	snapshot.Sources = maps.Clone(snapshot.Sources)
+	if snapshot.Sources == nil {
+		return nil, false, errors.New("missing source metadata")
+	}
+	snapshot.Sources[SourceOpenFindings] = findingsSource
+	snapshot.Complete = snapshot.Complete && findings.Complete
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, false, err
@@ -32,7 +41,26 @@ func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, errors.New("missing source metadata")
 	}
+	findingsDocument, _ := document[SourceOpenFindings].(map[string]any)
 	mark := func(name string, status map[string]any, code string) {
+		for _, dependency := range append([]string{SourceOpenFindings}, findingSources...) {
+			if name == dependency {
+				findingsDocument["complete"] = false
+				derived, _ := sources[SourceOpenFindings].(map[string]any)
+				derived["complete"] = false
+				limitations, _ := derived["limitations"].([]any)
+				found := false
+				for _, limitation := range limitations {
+					if limitation == "presentation_incomplete" {
+						found = true
+					}
+				}
+				if !found {
+					derived["limitations"] = append(limitations, "presentation_incomplete")
+				}
+				break
+			}
+		}
 		document["complete"] = false
 		output["truncated"] = true
 		output["retry_hint"] = "Rerun with higher --text-limit and/or --max-output-bytes; evidence is collected again and may have changed."
@@ -127,6 +155,35 @@ func render(snapshot Snapshot, maxBytes, textLimit int) ([]byte, bool, error) {
 		data, err = encode()
 		return err
 	}
+	// Peer IDs repeat information already present on the findings. If the
+	// packet is too large, discard peer lists together in one encoding pass.
+	if len(data) > maxBytes {
+		items, _ := findingsDocument["unresolved_threads"].([]any)
+		dropped := 0
+		for _, item := range items {
+			finding := item.(map[string]any)
+			peers, _ := finding["same_location_as"].([]any)
+			if len(peers) > 0 {
+				dropped += len(peers)
+				finding["same_location_as"] = []any{}
+				finding["same_location_truncated"] = true
+			}
+		}
+		if dropped > 0 {
+			mark(SourceOpenFindings, nil, "output_budget")
+			omitted["open_findings.same_location_as"] = dropped
+			data, err = encode()
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	// Remove derived rows before reducing any of their original sources.
+	for _, field := range []string{"unthreaded_review_bodies", "unresolved_threads"} {
+		if err := reduce(findingsDocument, field, SourceOpenFindings, "open_findings."+field, nil); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, name := range []string{"files", "statuses", "checks", "issue_comments", "reviews"} {
 		if err := reduce(document, name, name, name, nil); err != nil {
 			return nil, false, err
@@ -207,6 +264,12 @@ func writeText(w io.Writer, encoded []byte) error {
 	metadata, _ := document["pull_request"].(map[string]any)
 	if _, err := fmt.Fprintf(w, "AID.pr: %q\nComplete: %v (capture is not atomic)\n", metadata["title"], document["complete"]); err != nil {
 		return err
+	}
+	if findings, ok := document[SourceOpenFindings].(map[string]any); ok {
+		counts, _ := findings["counts"].(map[string]any)
+		if _, err := fmt.Fprintf(w, "Open findings: %v bot, %v human, %v unknown; %v outdated; %v review bodies (complete: %v).\n", counts["bot"], counts["human"], counts["unknown"], counts["outdated"], counts["unthreaded_bodies"], findings["complete"]); err != nil {
+			return err
+		}
 	}
 	sources, _ := document["sources"].(map[string]any)
 	keys := make([]string, 0, len(sources))

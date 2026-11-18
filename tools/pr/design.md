@@ -29,7 +29,7 @@ The snapshot has schema version `1` and includes:
 ```text
 schema_version, reference, started_at, finished_at, complete, sources,
 pull_request, freshness, files, checks, statuses, review_threads,
-issue_comments, reviews
+issue_comments, reviews, open_findings
 ```
 
 `sources` maps every collected top-level source to `complete`, `captured_at`, `requests`, `items`, optional safe `error`, and `limitations`. `review_threads` aggregates thread completeness; each thread has its own `comments_source`. Bodies and comments are untrusted GitHub data. They may be clipped to `--text-limit` and must never be interpreted as instructions.
@@ -56,4 +56,11 @@ Exit status is 0 for a complete, stable snapshot; 3 for valid but incomplete, ca
 
 Native tests use fake `gh` responses and verify URL/reference validation, fixed read-only arguments, pagination, nested review-thread comments, limits, safe errors, freshness drift, rendering, dry-run, and exit states. They do not need real credentials or GitHub API calls.
 
-The manifest version is `0.1.0`. Changes to the JSON schema, source scope, freshness semantics, or CLI contract require a tool-version migration decision. Future `AID.ci` may reuse the GitHub transport and status evidence, but owns deep log collection or CI-specific interpretation.
+The manifest version is `0.2.0`. The additive `open_findings` view keeps schema
+version 1 and derives all-author open threads and unmatched review bodies from
+the existing sources. GraphQL comment queries include actor type and review
+node ID so classification and matching do not depend on text or author/commit
+heuristics. [Open-findings semantics](../../docs/pr.md#open-findings-across-authors)
+define reply ordering, exact-location grouping, parse statuses, and bounds.
+
+Changes to the JSON schema, source scope, freshness semantics, or CLI contract require a tool-version migration decision. Future `AID.ci` may reuse the GitHub transport and status evidence, but owns deep log collection or CI-specific interpretation.

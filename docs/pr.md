@@ -27,6 +27,7 @@ Schema version 1 returns the reference, start/finish timestamps, global `complet
 | `files` | Changed-file records, within GitHub's 3,000-file endpoint cap |
 | `checks` | Check runs for the exact start head SHA in both base and head repositories |
 | `statuses` | Commit statuses for that SHA in both repository scopes |
+| `open_findings` | All unresolved threads and review bodies without matching threads, with author, reply, severity-marker, and location metadata |
 | `review_threads` | GraphQL review threads and their paginated nested comments; each thread reports `comments_source` |
 | `issue_comments`, `reviews` | PR conversation comments and submitted reviews |
 | `sources` | Per-source completeness, requests, item counts, safe errors, and limitations |
@@ -39,6 +40,58 @@ with matching nonempty node IDs are merged across repositories; numeric-only
 identities stay repository-scoped. Missing or inaccessible head repositories
 leave check/status coverage incomplete. An identity repeated within one
 repository's pagination also marks that source incomplete.
+
+## Open findings across authors
+
+`open_findings` derives an all-authors view from the same collected metadata,
+threads, and reviews, with no extra API requests. It includes every retained
+unresolved thread, including outdated threads. Each entry keeps its GraphQL
+`thread_id` and comment URL for a later authorized reply or resolution.
+
+```sh
+AID.pr --repo OWNER/REPO --pr 42 --json | jq '.open_findings'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `author_kind`, `bot` | The API actor type identifies a human, bot, or unknown actor. Known bot logins normalize to `copilot`, `codex`, `coderabbit`, or `claude`; other bots keep a null `bot`. |
+| `severity`, `parse_status` | Only a leading Codex P0-P3 badge supplies inline severity. Other threads have null severity. A malformed badge reports `unrecognized` and makes the view incomplete. |
+| `last_reply_by` | The latest identifiable commenter after the finding author's last comment. A tie between different possible latest repliers leaves this field null and makes the reply evidence incomplete. |
+| `pr_author_replied_after` | The PR author commented after the finding author's last comment. `replies_complete: false` means missing comments, identities, or ambiguous timestamps prevent a complete account. |
+| `same_location_as` | Other unresolved thread IDs that share a path, line, diff side (`LEFT` or `RIGHT`), and diff revision. Outdated threads use their original line and revision. A missing coordinate excludes a thread from grouping. This groups locations without judging whether findings are equivalent. |
+
+Each excerpt is bounded by `--text-limit`, carries `excerpt_clipped`, and is
+marked `untrusted: true`. Marker parsing uses the retained source before excerpt
+clipping. Known bot identity is based on the API actor and login; it does not
+establish that the bot's claim is correct.
+
+`unthreaded_review_bodies` retains nonempty, non-pending review bodies without
+an exact review-node-ID match among collected thread comments. It includes
+human and bot reviews. CodeRabbit's `Outside diff range comments` section is
+also retained when the same review has inline threads, with label
+`outside_diff_range`. The tool does not parse a finding count from that body.
+A recognizable but changed outside-diff marker produces an `unrecognized`
+parse status and an incomplete view. `thread_match: unknown` means missing
+thread evidence or review associations prevent a definite match decision.
+
+Review bodies can contain approvals, notices, or findings from earlier commits.
+Their presence is not an unresolved-thread count or a merge-blocking verdict;
+`state` and `commit` provide context for the agent to inspect them.
+
+`counts_scope: collected` means counts describe evidence before final output
+trimming; `output.omitted_items` reports removed entries. An empty list is not
+proof of no findings when `complete` is false. `source_names` identifies the
+underlying sources, and `sources.open_findings` records capture time,
+completeness, and limitations. Missing sources, freshness drift, malformed
+markers, and presentation truncation keep the view incomplete. Exact-location
+peer lists allow up to 100 IDs per thread. Across all threads, encoded peer IDs
+can use up to one eighth of `--max-output-bytes`. The collector allocates that
+space in thread-ID order and marks shortened lists with `same_location_truncated`.
+When the snapshot exceeds its output budget, the renderer trims peer lists and
+other derived data before removing original evidence.
+
+The view is an additive schema-version-1 extension in tool version 0.2.0.
+It reports no automated-review settlement state and does not wait for bots.
 
 ## Read completeness before interpreting data
 
@@ -63,6 +116,9 @@ Configuration follows the suite precedence: a command-line option overrides `too
 | `--max-requests` | 200 | GitHub API requests |
 | `--max-retained-bytes` | 16 MiB | In-memory evidence retained before rendering |
 | `--max-response-bytes` | 8 MiB | One `gh api` response |
+
+`--help` includes the supported numeric ranges. An invalid bound names the
+option, its range, and the supplied value, with exit code 2.
 
 Every JSON result has `output.max_bytes`, `output.text_limit`, `output.truncated`, `output.omitted_items`, and `output.truncated_bodies`. Truncated output also includes `output.retry_hint`. If a body is clipped or final output exceeds its limit, the relevant source is marked incomplete and the command exits 3. Rerun with a larger appropriate limit when that evidence is necessary; evidence is collected again and may have changed, because the command does not cache or automatically widen collection.
 

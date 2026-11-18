@@ -43,7 +43,7 @@ func TestCLIVersion(t *testing.T) {
 	if code := run([]string{"--version", "--json"}, &out, &errs, noAPI(t)); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, &errs)
 	}
-	if result := decode(t, out.Bytes()); result["command"] != "AID.pr-delta" || result["tool_version"] != "0.1.0" {
+	if result := decode(t, out.Bytes()); result["command"] != "AID.pr-delta" || result["tool_version"] != "0.1.1" {
 		t.Errorf("version = %v", result)
 	}
 }

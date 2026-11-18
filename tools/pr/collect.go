@@ -725,6 +725,7 @@ func (c *collector) processThreadNodes(key string, nodes []*graphQLReviewThread,
 		}
 		thread := ReviewThread{
 			ID:           node.ID,
+			DiffSide:     node.DiffSide,
 			Path:         node.Path,
 			Line:         node.Line,
 			OriginalLine: node.OriginalLine,
@@ -1200,10 +1201,12 @@ func pagedEndpoint(endpoint string, perPage, page int) string {
 }
 
 func sortComments(comments []Comment) {
-	sort.Slice(comments, func(i, j int) bool {
+	sort.SliceStable(comments, func(i, j int) bool {
 		if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
-			if comments[i].ID == comments[j].ID {
-				return comments[i].NodeID < comments[j].NodeID
+			// GraphQL node IDs are opaque. Preserve connection order on tied
+			// timestamps so a reply cannot become the thread's root comment.
+			if comments[i].ID == 0 || comments[j].ID == 0 {
+				return false
 			}
 			return comments[i].ID < comments[j].ID
 		}
@@ -1212,6 +1215,7 @@ func sortComments(comments []Comment) {
 }
 
 type restActor struct {
+	Type    string `json:"type"`
 	Login   string `json:"login"`
 	ID      int64  `json:"id"`
 	NodeID  string `json:"node_id"`
@@ -1219,7 +1223,7 @@ type restActor struct {
 }
 
 func (actor restActor) normalize() Actor {
-	return Actor{Login: actor.Login, ID: actor.ID, NodeID: actor.NodeID, URL: actor.HTMLURL}
+	return Actor{Type: actor.Type, Login: actor.Login, ID: actor.ID, NodeID: actor.NodeID, URL: actor.HTMLURL}
 }
 
 type restRepository struct {
@@ -1454,6 +1458,7 @@ type graphQLReviewThreadsConnection struct {
 }
 
 type graphQLReviewThread struct {
+	DiffSide     string                     `json:"diffSide"`
 	ID           string                     `json:"id"`
 	IsResolved   bool                       `json:"isResolved"`
 	IsOutdated   bool                       `json:"isOutdated"`
@@ -1483,6 +1488,9 @@ func (data reviewThreadCommentsData) connection() (*graphQLCommentsConnection, b
 }
 
 type graphQLComment struct {
+	Review *struct {
+		ID string `json:"id"`
+	} `json:"pullRequestReview"`
 	NodeID            string          `json:"id"`
 	FullDatabaseID    json.RawMessage `json:"fullDatabaseId"`
 	URL               string          `json:"url"`
@@ -1516,6 +1524,9 @@ func (comment graphQLComment) normalize(resolved, threadOutdated bool) Comment {
 		CreatedAt: comment.CreatedAt, UpdatedAt: comment.UpdatedAt, Path: comment.Path,
 		Line: comment.Line, OriginalLine: comment.OriginalLine, DiffHunk: comment.DiffHunk,
 		Resolved: resolved, Outdated: comment.Outdated || threadOutdated,
+	}
+	if comment.Review != nil {
+		result.ReviewNodeID = comment.Review.ID
 	}
 	if comment.Commit != nil {
 		result.CommitID = comment.Commit.OID

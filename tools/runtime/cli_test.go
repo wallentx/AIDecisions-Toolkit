@@ -39,7 +39,7 @@ func TestCLIDryRunConfigPrecedenceAndNoInspection(t *testing.T) {
 func TestCLIVersionBypassesInvalidConfigAndSelectionErrors(t *testing.T) {
 	badConfig := writeFile(t, "bad.yml", []byte("not: valid: yaml"))
 	var stdout, stderr bytes.Buffer
-	if code := Run([]string{"--version", "--config", badConfig}, nil, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"tool_version":"0.1.0"`) {
+	if code := Run([]string{"--version", "--config", badConfig}, nil, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"tool_version":"0.1.1"`) {
 		t.Fatalf("version code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	for _, args := range [][]string{{}, {"a", "b"}, {"a", "--file", "b"}, {"a", "--json", "--text"}} {

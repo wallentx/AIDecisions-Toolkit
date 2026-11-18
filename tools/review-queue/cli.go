@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,12 +15,22 @@ import (
 	"time"
 
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 	"aid/internal/github"
 	"aid/internal/prdelta"
 
 	"golang.org/x/term"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":            {Min: 0, Max: 3600, OpenMin: true},
+	"max-prs":            {Min: 1, Max: 1000},
+	"delta-concurrency":  {Min: 1, Max: 16},
+	"title-limit":        {Min: 1, Max: 4096},
+	"max-response-bytes": {Min: 4096, Max: 33554432},
+	"max-output-bytes":   {Min: 4096, Max: 16777216},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -91,6 +100,7 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	showVersion := flags.Bool("version", false, "print tool and suite versions")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	textOutput := flags.Bool("text", false, "emit one line per pull request")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.review-queue [--owner OWNER]... [--reviewer LOGIN] [--workspace DIR] [--no-delta] [options]\n\nList open pull requests waiting on a reviewer, tagged new or re-review, with a delta for re-reviews.\nRead-only; no model call. Owners default to config, then the workspace's git remotes, then all repositories.\nExit 0: complete; 3: incomplete, search failed, or truncated; 2: usage; 1: fatal error.")
 		flags.PrintDefaults()
@@ -153,14 +163,11 @@ func run(args []string, stdout, stderr io.Writer, newAPI func(github.Client) API
 	if !visited["max-response-bytes"] {
 		*maxResponse = configured.MaxResponseBytes
 	}
-	if *gh == "" || math.IsNaN(*timeout) || math.IsInf(*timeout, 0) || *timeout <= 0 || *timeout > 3600 {
-		return cliError(stderr, 2, "gh must be set and timeout must be greater than 0 and at most 3600 seconds")
+	if *gh == "" {
+		return cliError(stderr, 2, "--gh must be set")
 	}
-	if *maxPRs < 1 || *maxPRs > 1000 || *concurrency < 1 || *concurrency > 16 || *titleLimit < 1 || *titleLimit > 4096 {
-		return cliError(stderr, 2, "invalid --max-prs (1-1000), --delta-concurrency (1-16), or --title-limit (1-4096)")
-	}
-	if *maxResponse < 4096 || *maxResponse > 32<<20 || *maxOutput < 4096 || *maxOutput > 16<<20 {
-		return cliError(stderr, 2, "invalid response or output limit")
+	if err := cliLimits.Validate(flags); err != nil {
+		return cliError(stderr, 2, err.Error())
 	}
 	if *reviewer != "" && !prdelta.ValidLogin(*reviewer) {
 		return cliError(stderr, 2, "--reviewer must be a GitHub login")

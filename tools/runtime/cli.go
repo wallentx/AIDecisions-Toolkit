@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,10 +15,16 @@ import (
 	"time"
 
 	"aid/internal/buildinfo"
+	"aid/internal/clilimits"
 	"aid/internal/config"
 
 	"golang.org/x/term"
 )
+
+var cliLimits = clilimits.Table{
+	"timeout":        {Min: 0, Max: 3600, OpenMin: true},
+	"max-file-bytes": {Min: 0, Max: float64(MaximumMaxFileBytes)},
+}
 
 //go:embed tool.json
 var ManifestJSON []byte
@@ -43,11 +48,12 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 	manifestPath := flags.String("host-manifest", "", "strict JSON allowlist for opt-in host/path observation")
 	configPath := flags.String("config", "", "AID YAML configuration path")
 	timeout := flags.Float64("timeout", 120, "total collection timeout in seconds")
-	maxFileBytes := flags.Int64("max-file-bytes", initial.MaxFileBytes, "maximum target file size (up to 2 GiB)")
+	maxFileBytes := flags.Int64("max-file-bytes", initial.MaxFileBytes, "maximum target file size; 0 uses the default")
 	jsonOutput := flags.Bool("json", false, "emit canonical compact JSON evidence")
 	textOutput := flags.Bool("text", false, "emit a readable static-facts summary")
 	dryRun := flags.Bool("dry-run", false, "validate options and manifest without reading the target or observing host paths")
 	showVersion := flags.Bool("version", false, "print tool and suite versions")
+	cliLimits.Help(flags)
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: AID.runtime [options] FILE\n       AID.runtime --file FILE [options]\n\nCollect bounded static facts for one Linux/Android AArch64 ELF executable or shared object. The target is never executed.\nExit 0: complete supported facts; 3: valid unsupported/malformed/incomplete evidence; 2: usage/config/manifest; 1: fatal/output error.")
 		flags.PrintDefaults()
@@ -103,11 +109,8 @@ func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
 		*timeout = common.TimeoutSeconds
 	}
 	options := Options{MaxFileBytes: *maxFileBytes}
-	if err := ValidateOptions(options); err != nil {
+	if err := cliLimits.Validate(flags); err != nil {
 		return cliError(stderr, 2, err.Error())
-	}
-	if math.IsNaN(*timeout) || math.IsInf(*timeout, 0) || *timeout <= 0 || *timeout > 3600 {
-		return cliError(stderr, 2, "timeout must be greater than 0 and at most 3600 seconds")
 	}
 	manifest, err := LoadHostManifest(*manifestPath)
 	if err != nil {
