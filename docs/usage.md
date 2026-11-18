@@ -182,7 +182,7 @@ evidence without API credentials or model calls and keeps reusable snapshots in
 the local private cache. The current agent applies criteria and obtains
 independent review; discovery does not install tools or change guidance.
 
-## Install agent skills
+## Install agent skills and MCP
 
 ```sh
 AID --init
@@ -191,6 +191,19 @@ AID --init --provider codex --dry-run
 AID --init --provider codex --provider claude
 ```
 
+`AID --init` installs per-tool `SKILL.md` files and registers the `aid` stdio
+MCP server (`AID --mcp`) for each selected client:
+
+| Client | `--provider` ID | Skills directory | MCP configuration |
+| --- | --- | --- | --- |
+| Codex | `codex` | `~/.codex/skills` | `~/.codex/config.toml` (`[mcp_servers.aid]`) |
+| Claude Code | `claude` | `~/.claude/skills` | `~/.claude.json` (`mcpServers.aid`) |
+| Cursor | `cursor` | `~/.cursor/skills` | `~/.cursor/mcp.json` (`mcpServers.aid`) |
+| Gemini CLI | `gemini` | `~/.gemini/skills` | `~/.gemini/settings.json` (`mcpServers.aid`) |
+| Antigravity | `antigravity` | `~/.gemini/antigravity-cli/skills` | `~/.gemini/config/mcp_config.json` (`mcpServers.aid`) |
+| OpenCode | `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` (`mcp.aid`) |
+| GitHub Copilot | `copilot` | `~/.copilot/skills` | `~/.copilot/mcp-config.json` (`mcpServers.aid`) |
+
 The interactive picker supports arrows or j/k, Space to toggle, Enter to
 review, u to update checked installed clients, and q/Esc to cancel. Installed
 clients start checked; detected clients are displayed without preselection.
@@ -198,16 +211,16 @@ The review screen defaults to Cancel. Unchecking an installed client plans its
 removal; u updates checked clients without removing unchecked ones.
 
 Explicit `--provider` selections allow scripted setup. `--dry-run` prints a
-plan without writing skills or config. Local skills are installed for Codex,
-Claude Code, Cursor, Gemini CLI, Antigravity CLI, OpenCode, and Copilot CLI.
-Only the selected clients are modified. No hooks or external plugins are
-required for the current tools.
+plan without writing skills or client configuration. Only the selected clients
+are modified, and shared MCP files keep all unrelated keys and foreign MCP
+servers intact. No hooks or external plugins are required.
 
 Installer state is tracked at `${XDG_STATE_HOME:-~/.local/state}/AID/installer.json`.
-Owned hashes protect user edits; conflicting unmanaged or edited files block
-application. Files and parents must avoid symlinks. Skill commands bind to
+Owned hashes protect user edits on both skill files and the `aid` MCP entry;
+conflicting unmanaged or edited entries block application. Files and parents
+must avoid symlinks. Skill commands and MCP server registrations bind to
 absolute sibling executables, so place the suite in its intended directory
-before installing skills. After moving it, rerun initialization.
+before running initialization. After moving it, rerun `AID --init`.
 
 ## Update on the current device
 

@@ -10,9 +10,10 @@
 single-pass Decisions API checks (across OpenAI, Google Gemini, TypeSafe Jev,
 OpenRouter, and LiteLLM) that return bounded JSON and calibrated probabilities
 in one call. Every command runs directly in a terminal, and `AID --init`
-installs matching skills into Codex, Claude Code, Cursor, Gemini CLI,
-Antigravity, OpenCode, and GitHub Copilot (alongside `AID --mcp` over stdio) so
-your agents already know when and how to invoke each tool for you.
+installs matching `SKILL.md` skills and registers the `aid` stdio MCP server
+(`AID --mcp`) in Codex, Claude Code, Cursor, Gemini CLI, Antigravity, OpenCode,
+and GitHub Copilot so your agents already know when and how to invoke each tool
+for you.
 
 | Tool | What it gives the agent |
 | --- | --- |
@@ -29,7 +30,7 @@ your agents already know when and how to invoke each tool for you.
 Download the native ZIP matching your OS and architecture from
 [GitHub Releases](https://github.com/wallentx/AIDecisions-Toolkit/releases).
 Extract it, keep all executables together in one directory on `PATH`, and run
-`AID --init` so your local coding agents learn the installed tool skills.
+`AID --init` to install both agent skills and MCP client configuration.
 Archives include checksums and build provenance.
 
 Termux users build from source using the commands below. `AID.runtime` inspects
@@ -39,9 +40,10 @@ explicit unavailable result.
 ## Build on this device
 
 Run `./install.sh` to build and install the complete suite to `~/.local/bin`,
-then run `AID --init` to install or update agent skills. The build script
-requires Go and prints a `PATH` setup command when needed. To choose another
-directory, run `INSTALL_DIR=/absolute/path/to/bin ./install.sh`.
+then run `AID --init` to configure skills and MCP across your local coding
+agents. The build script requires Go and prints a `PATH` setup command when
+needed. To choose another directory, run
+`INSTALL_DIR=/absolute/path/to/bin ./install.sh`.
 
 Run these commands from the `AIDecisions-Toolkit` directory to build into
 `./dist`:
@@ -67,7 +69,7 @@ directory to `PATH`, or build directly into your binary directory with
 
 | Command | Result |
 | --- | --- |
-| `AID -i`, `AID --init` | Open the interactive picker to install or update agent skills |
+| `AID -i`, `AID --init` | Open the interactive picker to install or update agent skills and MCP configuration |
 | `AID --mcp` | Serve cached tool collectors and `pr_delta` to an MCP client over stdio ([docs/mcp.md](docs/mcp.md)) |
 | `AID -l`, `AID --list` | List tools and descriptions |
 | `AID -v`, `AID --version` | Show suite and individual executable versions |
