@@ -112,18 +112,19 @@ func parseWorkflowRunURL(raw string, selectedHost string) (WorkflowRun, error) {
 	if len(parts) == 5 {
 		return ref, nil
 	}
-	identifier, ok := parsePositiveInt64(parts[6])
-	if !ok {
-		return WorkflowRun{}, errors.New("invalid GitHub workflow run URL")
-	}
 	switch parts[5] {
 	case "attempts":
-		if identifier > int64(^uint(0)>>1) {
+		attempt, err := strconv.Atoi(parts[6])
+		if err != nil || attempt <= 0 || !allDigits(parts[6]) {
 			return WorkflowRun{}, errors.New("invalid GitHub workflow run URL")
 		}
-		ref.Attempt = int(identifier)
+		ref.Attempt = attempt
 	case "job":
-		ref.JobID = identifier
+		jobID, ok := parsePositiveInt64(parts[6])
+		if !ok {
+			return WorkflowRun{}, errors.New("invalid GitHub workflow run URL")
+		}
+		ref.JobID = jobID
 	default:
 		return WorkflowRun{}, errors.New("invalid GitHub workflow run URL")
 	}
