@@ -1,7 +1,9 @@
 package github
 
 import (
+	"math"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -94,6 +96,8 @@ func TestParseWorkflowRunForms(t *testing.T) {
 	}{
 		{name: "run URL", raw: "https://GHE.Example.com/Acme/widget.go/actions/runs/42", host: "ghe.example.com", wantRunID: 42},
 		{name: "attempt URL", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42/attempts/3", host: "GHE.Example.com", wantRunID: 42, wantAttempt: 3},
+		{name: "largest native attempt", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42/attempts/" + strconv.Itoa(math.MaxInt), host: "ghe.example.com", wantRunID: 42, wantAttempt: math.MaxInt},
+		{name: "64-bit job ID", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42/job/9223372036854775807", host: "ghe.example.com", wantRunID: 42, jobID: math.MaxInt64},
 		{name: "job URL", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42/job/99", host: "ghe.example.com", wantRunID: 42, jobID: 99},
 		{name: "run URL with attempt", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42", host: "ghe.example.com", wantRunID: 42, attempt: 2, wantAttempt: 2},
 		{name: "attempt URL with matching attempt", raw: "https://ghe.example.com/Acme/widget.go/actions/runs/42/attempts/3", host: "ghe.example.com", wantRunID: 42, attempt: 3, wantAttempt: 3},
@@ -163,6 +167,8 @@ func TestParseWorkflowRunRejectsAmbiguousOrUnsafeInput(t *testing.T) {
 		{name: "zero URL run", raw: "https://github.com/a/b/actions/runs/0"},
 		{name: "non-number attempt", raw: "https://github.com/a/b/actions/runs/1/attempts/main"},
 		{name: "zero URL attempt", raw: "https://github.com/a/b/actions/runs/1/attempts/0"},
+		{name: "signed attempt", raw: "https://github.com/a/b/actions/runs/1/attempts/+1"},
+		{name: "attempt exceeds native int", raw: "https://github.com/a/b/actions/runs/1/attempts/" + strconv.FormatUint(uint64(math.MaxInt)+1, 10)},
 		{name: "non-number job", raw: "https://github.com/a/b/actions/runs/1/job/main"},
 		{name: "zero job", raw: "https://github.com/a/b/actions/runs/1/job/0"},
 		{name: "unknown suffix", raw: "https://github.com/a/b/actions/runs/1/jobs/2"},
